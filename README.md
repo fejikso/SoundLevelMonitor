@@ -3,10 +3,11 @@
 A minimal Flutter app that measures ambient noise through the device microphone, color-codes custom thresholds, aggregates min/mean/max levels per interval, and exports a CSV summary. Supports Android and iOS (building for iOS still requires macOS/Xcode).
 
 ## Features
-- Live decibel reading with color feedback (Calm/Busy/Loud/Hazard)
-- Configurable recording interval (15 seconds to 5 minutes)
-- In-memory history of min/mean/max values per interval
-- Record, Pause, Export (CSV share sheet), and About flows
+- Live decibel reading with bright color feedback that latches for 10 seconds after each threshold breach
+- Configurable recording interval (15 seconds to 5 minutes) plus live min/mean/max stats for every interval
+- Adjustable yellow/red thresholds with an in-app guidance table
+- Options screen with a “keep screen awake” toggle to prevent the display from sleeping
+- Record, Pause, Export (CSV share sheet), About with GitHub/support links
 
 ## Prerequisites
 1. Install Flutter 3.38+ and add it to your `PATH` or run it explicitly (e.g. `/mnt/vol1/var/flutter/bin/flutter`).
