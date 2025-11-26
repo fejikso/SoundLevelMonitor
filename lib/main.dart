@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -41,7 +42,14 @@ class MonitorHomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sound Level Monitor'),
+        title: const Text('Decibel Monitor'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Quit app',
+            onPressed: () => _confirmExit(context),
+          ),
+        ],
       ),
       body: const SafeArea(
         child: _MonitorContent(),
@@ -1409,26 +1417,107 @@ Future<void> _exportHistory(BuildContext context) async {
   }
 }
 
+Future<void> _confirmExit(BuildContext context) async {
+  final shouldExit = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Exit Decibel Monitor?'),
+          content: const Text(
+            'Are you sure you want to close the app?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Exit'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+  if (shouldExit && context.mounted) {
+    SystemNavigator.pop();
+  }
+}
+
 Future<void> _showAboutDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
     builder: (context) {
+      final textTheme = Theme.of(context).textTheme;
       return AlertDialog(
         title: const Text('About'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Sound Level Monitor estimates ambient noise using your device microphone.',
-            ),
-            const SizedBox(height: 12),
-            _LinkText(
-              label:
-                  'This app was crafted in the author\'s free time. If you find it useful, please consider tipping to support further development.',
-              url: 'https://buymeacoffee.com/fejikso',
-            ),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Decibel Monitor helps you understand daily noise exposure with live readings, historical stats, histogram breakdowns, and second-by-second box plots—all powered by your device’s microphone.',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Key features:',
+                style: textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              const _BulletLine(
+                'Real-time sound level chart with alert thresholds.',
+              ),
+              const _BulletLine(
+                'Recording interval controls and persistent history.',
+              ),
+              const _BulletLine(
+                'Histogram view showing how long you spend in each dB band.',
+              ),
+              const _BulletLine(
+                'Export options for both raw history and histogram data.',
+              ),
+              const _BulletLine(
+                'Configurable levels, palettes, and wake-lock behavior.',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Safety notes:',
+                style: textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              const _BulletLine(
+                'Always comply with local laws and privacy requirements before recording.',
+              ),
+              const _BulletLine(
+                'This app cannot guarantee precision or accuracy. Use dedicated instruments for critical measurements.',
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Support the author',
+                style: textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    '☕',
+                    style: TextStyle(fontSize: 18),
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This app was created in the author’s free time. If you like it, please tip the author to promote the development of more tools like this.',
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const _LinkText(
+                label: 'Tip via Buy Me a Coffee',
+                url: 'https://buymeacoffee.com/fejikso',
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -1658,6 +1747,28 @@ class _StatRow extends StatelessWidget {
           ),
         );
       }),
+    );
+  }
+}
+
+class _BulletLine extends StatelessWidget {
+  const _BulletLine(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('• '),
+          Expanded(
+            child: Text(text),
+          ),
+        ],
+      ),
     );
   }
 }
