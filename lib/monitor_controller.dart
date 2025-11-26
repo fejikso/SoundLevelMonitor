@@ -77,6 +77,24 @@ class SamplePoint {
   final double positionSeconds;
 }
 
+class SecondBoxStats {
+  SecondBoxStats({
+    required this.start,
+    required this.minDb,
+    required this.q1,
+    required this.median,
+    required this.q3,
+    required this.maxDb,
+  });
+
+  final DateTime start;
+  final double minDb;
+  final double q1;
+  final double median;
+  final double q3;
+  final double maxDb;
+}
+
 class MonitorController extends ChangeNotifier {
   static const double smoothingAlpha = 0.1;
   static const double defaultCrossingSeconds = 0.2;
@@ -126,6 +144,9 @@ class MonitorController extends ChangeNotifier {
   double? _lastSampleDb;
   double _chartElapsedSeconds = 0;
   final Set<int> _hiddenHistogramBins = <int>{};
+  final List<SecondBoxStats> _secondBuckets = [];
+  final List<double> _currentSecondSamples = [];
+  int? _currentSecondKey;
 
   bool get isRecording => _isRecording;
   double? get currentDb => _currentDb;
@@ -137,6 +158,7 @@ class MonitorController extends ChangeNotifier {
       List.unmodifiable(_history.reversed.toList());
   List<SamplePoint> get intervalSamples => List.unmodifiable(_sampleBuffer);
   Set<int> get hiddenHistogramBins => Set.unmodifiable(_hiddenHistogramBins);
+  List<SecondBoxStats> get secondBuckets => List.unmodifiable(_secondBuckets);
   String? get errorMessage => _errorMessage;
   double get cautionThreshold => _cautionThreshold;
   double get dangerThreshold => _dangerThreshold;
@@ -198,6 +220,7 @@ class MonitorController extends ChangeNotifier {
         cancelOnError: true,
       );
       _resetHistogram(silent: true);
+      _resetBoxBuckets();
       _isRecording = true;
       _windowStart = DateTime.now();
       _startIntervalTimer();
@@ -213,6 +236,7 @@ class MonitorController extends ChangeNotifier {
 
   Future<void> pauseMonitoring() async {
     if (!_isRecording) return;
+    _finalizeSecondBucket(includePartial: true);
     _isRecording = false;
     _intervalTimer?.cancel();
     _intervalTimer = null;
@@ -336,6 +360,14 @@ class MonitorController extends ChangeNotifier {
     }
     _currentDb =
         _currentDb == null ? value : value * smoothingAlpha + _currentDb! * (1 - smoothingAlpha);
+    final secondKey = now.millisecondsSinceEpoch ~/ 1000;
+    _currentSecondKey ??= secondKey;
+    if (secondKey != _currentSecondKey) {
+      _finalizeSecondBucket();
+      _currentSecondKey = secondKey;
+    }
+    _currentSecondSamples.add(value);
+
     _windowSum += value;
     _windowCount++;
     _windowMin = _windowMin == null ? value : min(_windowMin!, value);
@@ -520,9 +552,69 @@ class MonitorController extends ChangeNotifier {
     _lastSampleDb = null;
     _sampleBuffer.clear();
     _chartElapsedSeconds = 0;
+    _resetBoxBuckets();
     if (!silent) {
       notifyListeners();
     }
+  }
+
+  void _resetBoxBuckets() {
+    _secondBuckets.clear();
+    _currentSecondSamples.clear();
+    _currentSecondKey = null;
+  }
+
+  void _finalizeSecondBucket({bool includePartial = false}) {
+    if (_currentSecondKey == null) {
+      _currentSecondSamples.clear();
+      return;
+    }
+    if (_currentSecondSamples.isEmpty && !includePartial) {
+      return;
+    }
+    if (_currentSecondSamples.isEmpty) {
+      _currentSecondKey = null;
+      return;
+    }
+    final samples = List<double>.from(_currentSecondSamples)..sort();
+    final start = DateTime.fromMillisecondsSinceEpoch(
+      _currentSecondKey! * 1000,
+    );
+    final stats = SecondBoxStats(
+      start: start,
+      minDb: samples.first,
+      q1: _percentile(samples, 0.25),
+      median: _percentile(samples, 0.5),
+      q3: _percentile(samples, 0.75),
+      maxDb: samples.last,
+    );
+    _secondBuckets.add(stats);
+    _trimBoxBuckets();
+    _currentSecondSamples.clear();
+    _currentSecondKey = null;
+  }
+
+  void _trimBoxBuckets() {
+    if (_secondBuckets.isEmpty) return;
+    final cutoff = DateTime.now().subtract(_interval);
+    while (_secondBuckets.isNotEmpty &&
+        _secondBuckets.first.start.isBefore(cutoff)) {
+      _secondBuckets.removeAt(0);
+    }
+  }
+
+  double _percentile(List<double> sorted, double percentile) {
+    if (sorted.isEmpty) return 0;
+    if (sorted.length == 1) return sorted.first;
+    final clamped = percentile.clamp(0.0, 1.0);
+    final position = clamped * (sorted.length - 1);
+    final lower = position.floor();
+    final upper = position.ceil();
+    if (lower == upper) {
+      return sorted[lower];
+    }
+    final weight = position - lower;
+    return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
   }
 
   Future<void> _restorePreferences() async {

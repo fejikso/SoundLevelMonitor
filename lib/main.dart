@@ -205,8 +205,6 @@ class _ControlsGridState extends State<_ControlsGrid> {
           onAbout: () => _showAboutDialog(context),
           mode: _mode,
           onModeChanged: (value) => setState(() => _mode = value),
-          useLogScale: controller.useLogScale,
-          onToggleLogScale: controller.setUseLogScale,
         ),
         const SizedBox(height: 12),
         AnimatedSwitcher(
@@ -255,7 +253,6 @@ class _LevelChart extends StatelessWidget {
     const maxY = 90.0;
     final intervalSeconds =
         controller.interval.inMilliseconds / Duration.millisecondsPerSecond;
-    final useLog = controller.useLogScale;
 
     return Card(
       child: Padding(
@@ -285,7 +282,6 @@ class _LevelChart extends StatelessWidget {
                   intervalSeconds: intervalSeconds <= 0 ? 1 : intervalSeconds,
                   caution: controller.cautionThreshold,
                   danger: controller.dangerThreshold,
-                  useLogScale: useLog,
                 ),
               ),
             if (buckets.isNotEmpty) ...[
@@ -500,7 +496,6 @@ class _BoxPlotChart extends StatelessWidget {
     required this.intervalSeconds,
     required this.caution,
     required this.danger,
-    required this.useLogScale,
   });
 
   final List<SecondBoxStats> buckets;
@@ -509,7 +504,6 @@ class _BoxPlotChart extends StatelessWidget {
   final double intervalSeconds;
   final double caution;
   final double danger;
-  final bool useLogScale;
 
   @override
   Widget build(BuildContext context) {
@@ -521,7 +515,6 @@ class _BoxPlotChart extends StatelessWidget {
         intervalSeconds: intervalSeconds,
         caution: caution,
         danger: danger,
-        useLogScale: useLogScale,
         colorScheme: Theme.of(context).colorScheme,
         textStyle: Theme.of(context).textTheme.bodySmall ??
             const TextStyle(fontSize: 12),
@@ -539,7 +532,6 @@ class _BoxPlotPainter extends CustomPainter {
     required this.intervalSeconds,
     required this.caution,
     required this.danger,
-    required this.useLogScale,
     required this.colorScheme,
     required this.textStyle,
   });
@@ -550,7 +542,6 @@ class _BoxPlotPainter extends CustomPainter {
   final double intervalSeconds;
   final double caution;
   final double danger;
-  final bool useLogScale;
   final ColorScheme colorScheme;
   final TextStyle textStyle;
 
@@ -686,20 +677,8 @@ class _BoxPlotPainter extends CustomPainter {
 
   double _mapValue(double value, double chartHeight) {
     final clamped = value.clamp(minDb, maxDb);
-    final ratio = useLogScale
-        ? _logRatio(clamped)
-        : (clamped - minDb) / (maxDb - minDb);
+    final ratio = (clamped - minDb) / (maxDb - minDb);
     return _topPadding + chartHeight * (1 - ratio);
-  }
-
-  double _logRatio(double value) {
-    final minAdjusted = (minDb <= 0 ? 1 : minDb).toDouble();
-    final maxAdjusted = (maxDb <= minAdjusted ? minAdjusted + 1 : maxDb).toDouble();
-    final valueAdjusted = math.max(value, minAdjusted);
-    final minLog = math.log(minAdjusted);
-    final maxLog = math.log(maxAdjusted);
-    final valueLog = math.log(valueAdjusted);
-    return ((valueLog - minLog) / (maxLog - minLog)).clamp(0, 1);
   }
 
   void _drawText(Canvas canvas, String text, Offset offset, TextStyle style) {
@@ -994,8 +973,6 @@ class _ControlsWrap extends StatelessWidget {
     required this.onAbout,
     required this.mode,
     required this.onModeChanged,
-    required this.useLogScale,
-    required this.onToggleLogScale,
   });
 
   final bool isRecording;
@@ -1005,8 +982,6 @@ class _ControlsWrap extends StatelessWidget {
   final VoidCallback onAbout;
   final InsightMode mode;
   final ValueChanged<InsightMode> onModeChanged;
-  final bool useLogScale;
-  final ValueChanged<bool> onToggleLogScale;
 
   @override
   Widget build(BuildContext context) {
@@ -1079,13 +1054,6 @@ class _ControlsWrap extends StatelessWidget {
             selected: {mode},
             onSelectionChanged: (value) => onModeChanged(value.first),
           ),
-            ),
-            SwitchListTile(
-              title: const Text('Logarithmic Y-axis'),
-              value: useLogScale,
-              onChanged: onToggleLogScale,
-              dense: true,
-              contentPadding: EdgeInsets.zero,
             ),
           ],
         );
