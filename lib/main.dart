@@ -527,18 +527,35 @@ class _HistogramCardState extends State<_HistogramCard> {
                   ),
                 ),
               ),
-            const SizedBox(height: 16),
-            if (visibleEntries.isNotEmpty)
-              Column(
-                children: [
-                  for (final entry in visibleEntries)
-                    _HistogramRow(
-                      bucket: entry.value,
-                      onHide: () => setState(() {
-                        _hiddenBins.add(entry.key);
-                      }),
-                    ),
-                ],
+            const SizedBox(height: 12),
+            if (totalSeconds > 0)
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final maxWidth = constraints.maxWidth;
+                  final tileWidth =
+                      maxWidth >= 520 ? (maxWidth - 12) / 2 : maxWidth;
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      for (var i = 0; i < buckets.length; i++)
+                        SizedBox(
+                          width: tileWidth,
+                          child: _HistogramToggle(
+                            bucket: buckets[i],
+                            isVisible: !_hiddenBins.contains(i),
+                            onChanged: (value) => setState(() {
+                              if (value) {
+                                _hiddenBins.remove(i);
+                              } else {
+                                _hiddenBins.add(i);
+                              }
+                            }),
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
           ],
         ),
@@ -615,31 +632,52 @@ class _HistogramCardState extends State<_HistogramCard> {
   }
 }
 
-class _HistogramRow extends StatelessWidget {
-  const _HistogramRow({required this.bucket, required this.onHide});
+class _HistogramToggle extends StatelessWidget {
+  const _HistogramToggle({
+    required this.bucket,
+    required this.isVisible,
+    required this.onChanged,
+  });
 
   final HistogramBucket bucket;
-  final VoidCallback onHide;
+  final bool isVisible;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    final theme = Theme.of(context);
+    final secondaryColor =
+        theme.textTheme.bodySmall?.color?.withValues(alpha: 0.7);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+        color: theme.colorScheme.surfaceContainerLowest,
+      ),
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()} dB',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()} dB',
+                  style: theme.textTheme.labelLarge,
+                ),
+                Text(
+                  _formatExposure(bucket.seconds),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: secondaryColor,
+                  ),
+                ),
+              ],
             ),
           ),
-          Text(
-            _formatExposure(bucket.seconds),
-            style: Theme.of(context).textTheme.labelLarge,
-          ),
-          IconButton(
-            tooltip: 'Hide bin',
-            onPressed: onHide,
-            icon: const Icon(Icons.close),
+          Switch.adaptive(
+            value: isVisible,
+            onChanged: onChanged,
           ),
         ],
       ),
