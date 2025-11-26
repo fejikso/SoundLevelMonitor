@@ -205,6 +205,8 @@ class _ControlsGridState extends State<_ControlsGrid> {
           onAbout: () => _showAboutDialog(context),
           mode: _mode,
           onModeChanged: (value) => setState(() => _mode = value),
+          useLogScale: controller.useLogScale,
+          onToggleLogScale: controller.setUseLogScale,
         ),
         const SizedBox(height: 12),
         AnimatedSwitcher(
@@ -218,19 +220,19 @@ class _ControlsGridState extends State<_ControlsGrid> {
               case InsightMode.stats:
                 if (widget.stats == null) {
                   return const Card(
-                    key: ValueKey('stats-empty'),
-                    child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text(
-                        'No interval stats yet. Start recording to see values.',
+                      key: ValueKey('stats-empty'),
+                      child: Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                          'No interval stats yet. Start recording to see values.',
+                        ),
                       ),
-                    ),
                   );
                 }
                 return _StatsCard(
-                  key: const ValueKey('stats'),
-                  title: 'Current interval so far',
-                  stats: widget.stats!,
+                      key: const ValueKey('stats'),
+                      title: 'Current interval so far',
+                      stats: widget.stats!,
                   progress: controller.intervalProgress,
                   isRecording: controller.isRecording,
                 );
@@ -248,19 +250,12 @@ class _LevelChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<MonitorController>();
-    final samples = controller.intervalSamples;
-    final windowSeconds =
+    final buckets = controller.secondBuckets;
+    const minY = 30.0;
+    const maxY = 90.0;
+    final intervalSeconds =
         controller.interval.inMilliseconds / Duration.millisecondsPerSecond;
-    final now = DateTime.now();
-
-    final minY = 30.0;
-    final maxY = 90.0;
-    final xInterval = windowSeconds <= 0 ? 1.0 : windowSeconds / 4;
-    final maxLineValue =
-        samples.isEmpty ? null : samples.map((s) => s.maxDb).reduce(math.max);
-    final meanLineValue = samples.isEmpty
-        ? null
-        : samples.map((s) => s.meanDb).reduce((a, b) => a + b) / samples.length;
+    final useLog = controller.useLogScale;
 
     return Card(
       child: Padding(
@@ -273,7 +268,7 @@ class _LevelChart extends StatelessWidget {
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 16),
-            if (samples.isEmpty)
+            if (buckets.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 32),
                 child: Center(
@@ -283,26 +278,17 @@ class _LevelChart extends StatelessWidget {
             else
               SizedBox(
                 height: 220,
-                child: LineChart(
-                  _buildChartData(
-                    context,
-                    controller,
-                    _buildSpots(
-                      samples,
-                      (p) => p.meanDb,
-                      now,
-                      windowSeconds,
-                    ),
-                    minY,
-                    maxY,
-                    windowSeconds,
-                    xInterval,
-                    maxLineValue,
-                    meanLineValue,
-                  ),
+                child: _BoxPlotChart(
+                  buckets: buckets,
+                  minDb: minY,
+                  maxDb: maxY,
+                  intervalSeconds: intervalSeconds <= 0 ? 1 : intervalSeconds,
+                  caution: controller.cautionThreshold,
+                  danger: controller.dangerThreshold,
+                  useLogScale: useLog,
                 ),
               ),
-            if (samples.isNotEmpty) ...[
+            if (buckets.isNotEmpty) ...[
               const SizedBox(height: 12),
             const SizedBox(height: 4),
             ],
@@ -312,137 +298,6 @@ class _LevelChart extends StatelessWidget {
     );
   }
 
-  LineChartData _buildChartData(
-    BuildContext context,
-    MonitorController controller,
-    List<FlSpot> meanSpots,
-    double minY,
-    double maxY,
-    double windowSeconds,
-    double xInterval,
-    double? maxLineValue,
-    double? meanLineValue,
-  ) {
-    Color colorFor(String label) =>
-        controller.thresholds.firstWhere((band) => band.label == label).color;
-    final calmColor = colorFor('Calm').withValues(alpha: 0.06);
-    final cautionColor = colorFor('Caution').withValues(alpha: 0.12);
-    final dangerColor = colorFor('Danger').withValues(alpha: 0.12);
-    final caution = controller.cautionThreshold.toDouble();
-    final danger = controller.dangerThreshold.toDouble();
-
-    return LineChartData(
-      minX: 0,
-      maxX: windowSeconds,
-      minY: minY,
-      maxY: maxY,
-      lineTouchData: LineTouchData(
-        enabled: false,
-      ),
-      gridData: FlGridData(
-        show: true,
-        drawVerticalLine: true,
-        horizontalInterval: 5,
-        verticalInterval: xInterval,
-      ),
-      titlesData: FlTitlesData(
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            interval: xInterval,
-            getTitlesWidget: (value, meta) => Text('${value.round()}s'),
-          ),
-        ),
-        leftTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 40,
-            getTitlesWidget: (value, meta) => Text('${value.round()}'),
-          ),
-        ),
-      ),
-      borderData: FlBorderData(
-        show: true,
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      rangeAnnotations: RangeAnnotations(
-        horizontalRangeAnnotations: [
-          HorizontalRangeAnnotation(
-            y1: minY,
-            y2: caution,
-            color: calmColor,
-          ),
-          HorizontalRangeAnnotation(
-            y1: caution,
-            y2: danger,
-            color: cautionColor,
-          ),
-          HorizontalRangeAnnotation(
-            y1: danger,
-            y2: maxY,
-            color: dangerColor,
-          ),
-        ],
-      ),
-      extraLinesData: ExtraLinesData(
-        horizontalLines: [
-          if (maxLineValue != null)
-            HorizontalLine(
-              y: maxLineValue,
-              color: Colors.red,
-              strokeWidth: 1,
-              dashArray: const [6, 3],
-            ),
-          if (meanLineValue != null)
-            HorizontalLine(
-              y: meanLineValue,
-              color: Colors.black,
-              strokeWidth: 1,
-              dashArray: const [4, 4],
-            ),
-        ],
-      ),
-      lineBarsData: [
-        _buildDotSeries(meanSpots, Colors.blueAccent),
-      ],
-    );
-  }
-
-  List<FlSpot> _buildSpots(
-    List<SamplePoint> samples,
-    double Function(SamplePoint) selector,
-    DateTime now,
-    double windowSeconds,
-  ) {
-    if (samples.isEmpty) {
-      return const [];
-    }
-    return samples.map((sample) {
-      final ageSeconds =
-          now.difference(sample.timestamp).inMilliseconds / 1000.0;
-      final x = (windowSeconds - ageSeconds).clamp(0, windowSeconds).toDouble();
-      return FlSpot(x, selector(sample));
-    }).toList();
-  }
-
-  LineChartBarData _buildDotSeries(List<FlSpot> spots, Color dotColor) {
-    return LineChartBarData(
-      spots: spots,
-      isCurved: false,
-      color: Colors.transparent,
-      barWidth: 0,
-      dotData: FlDotData(
-        show: true,
-        getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
-          radius: 3,
-          color: dotColor,
-          strokeColor: dotColor,
-        ),
-      ),
-    );
-  }
 }
 
 class _HistogramCard extends StatelessWidget {
@@ -528,7 +383,7 @@ class _HistogramCard extends StatelessWidget {
                   ),
                 ),
               ),
-            const SizedBox(height: 12),
+              const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerRight,
               child: FilledButton.icon(
@@ -637,6 +492,380 @@ class _HistogramCard extends StatelessWidget {
   }
 }
 
+class _BoxPlotChart extends StatelessWidget {
+  const _BoxPlotChart({
+    required this.buckets,
+    required this.minDb,
+    required this.maxDb,
+    required this.intervalSeconds,
+    required this.caution,
+    required this.danger,
+    required this.useLogScale,
+  });
+
+  final List<SecondBoxStats> buckets;
+  final double minDb;
+  final double maxDb;
+  final double intervalSeconds;
+  final double caution;
+  final double danger;
+  final bool useLogScale;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _BoxPlotPainter(
+        buckets: buckets,
+        minDb: minDb,
+        maxDb: maxDb,
+        intervalSeconds: intervalSeconds,
+        caution: caution,
+        danger: danger,
+        useLogScale: useLogScale,
+        colorScheme: Theme.of(context).colorScheme,
+        textStyle: Theme.of(context).textTheme.bodySmall ??
+            const TextStyle(fontSize: 12),
+      ),
+      willChange: true,
+    );
+  }
+}
+
+class _BoxPlotPainter extends CustomPainter {
+  _BoxPlotPainter({
+    required this.buckets,
+    required this.minDb,
+    required this.maxDb,
+    required this.intervalSeconds,
+    required this.caution,
+    required this.danger,
+    required this.useLogScale,
+    required this.colorScheme,
+    required this.textStyle,
+  });
+
+  final List<SecondBoxStats> buckets;
+  final double minDb;
+  final double maxDb;
+  final double intervalSeconds;
+  final double caution;
+  final double danger;
+  final bool useLogScale;
+  final ColorScheme colorScheme;
+  final TextStyle textStyle;
+
+  static const double _leftPadding = 40;
+  static const double _rightPadding = 12;
+  static const double _topPadding = 12;
+  static const double _bottomPadding = 28;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final chartWidth = size.width - _leftPadding - _rightPadding;
+    final chartHeight = size.height - _topPadding - _bottomPadding;
+    if (chartWidth <= 0 || chartHeight <= 0 || buckets.isEmpty) {
+      return;
+    }
+
+    final axisPaint = Paint()
+      ..color = colorScheme.outline
+      ..strokeWidth = 1;
+
+    final verticalAxisStart = Offset(_leftPadding, _topPadding);
+    final verticalAxisEnd =
+        Offset(_leftPadding, size.height - _bottomPadding);
+    canvas.drawLine(verticalAxisStart, verticalAxisEnd, axisPaint);
+
+    final horizontalAxisStart =
+        Offset(_leftPadding, size.height - _bottomPadding);
+    final horizontalAxisEnd =
+        Offset(size.width - _rightPadding, size.height - _bottomPadding);
+    canvas.drawLine(horizontalAxisStart, horizontalAxisEnd, axisPaint);
+
+    final xTicks = _buildXTicks(chartWidth);
+    _drawGrid(canvas, chartWidth, chartHeight, xTicks);
+    _drawThresholdBands(canvas, chartWidth, chartHeight);
+    _drawYTicks(canvas, chartHeight);
+    _drawBoxPlots(canvas, chartWidth, chartHeight);
+    _drawXAxisLabels(canvas, chartHeight, xTicks);
+    _drawYAxisLabel(canvas, chartHeight);
+  }
+
+  void _drawYTicks(Canvas canvas, double chartHeight) {
+    const tickStep = 10;
+    for (var value = minDb; value <= maxDb; value += tickStep) {
+      final y = _mapValue(value, chartHeight);
+      canvas.drawLine(
+        Offset(_leftPadding - 4, y),
+        Offset(_leftPadding, y),
+        Paint()
+          ..color = colorScheme.outline
+          ..strokeWidth = 1,
+      );
+      _drawText(
+        canvas,
+        '${value.round()}',
+        Offset(4, y - 7),
+        textStyle.copyWith(color: colorScheme.onSurfaceVariant, fontSize: 11),
+      );
+    }
+  }
+
+  void _drawBoxPlots(Canvas canvas, double chartWidth, double chartHeight) {
+    final whiskerPaint = Paint()..strokeWidth = 1.2;
+    final medianPaint = Paint()..strokeWidth = 2;
+    final boxFill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = const Color(0xFF90CAF9);
+    final boxBorder = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = const Color(0xFF0D47A1);
+
+    final latestStart = buckets.last.start;
+    final coverageSeconds = intervalSeconds <= 0 ? 1 : intervalSeconds;
+    final rangeStart =
+        latestStart.subtract(Duration(seconds: coverageSeconds.round()));
+    final boxWidth =
+        math.min(18.0, (chartWidth / coverageSeconds).clamp(2, 30));
+
+    for (var i = 0; i < buckets.length; i++) {
+      final bucket = buckets[i];
+      final relSeconds =
+          bucket.start.difference(rangeStart).inMilliseconds / 1000.0;
+      final ratio =
+          relSeconds.clamp(0, coverageSeconds).toDouble() / coverageSeconds;
+      final centerX = _leftPadding + ratio * chartWidth;
+      final boxColor = bucket.maxDb >= danger
+          ? Colors.red
+          : bucket.maxDb >= caution
+              ? Colors.amber
+              : const Color(0xFF0D47A1);
+
+      whiskerPaint.color = boxColor.withValues(alpha: 0.9);
+      medianPaint.color = boxColor;
+      boxBorder.color = boxColor;
+      boxFill.color = boxColor == const Color(0xFF0D47A1)
+          ? const Color(0xFF90CAF9)
+          : boxColor.withValues(alpha: 0.22);
+
+      final yMin = _mapValue(bucket.minDb, chartHeight);
+      final yMax = _mapValue(bucket.maxDb, chartHeight);
+      final yQ1 = _mapValue(bucket.q1, chartHeight);
+      final yQ3 = _mapValue(bucket.q3, chartHeight);
+      final yMedian = _mapValue(bucket.median, chartHeight);
+
+      canvas.drawLine(Offset(centerX, yMax), Offset(centerX, yMin), whiskerPaint);
+      canvas.drawLine(
+        Offset(centerX - boxWidth * 0.3, yMax),
+        Offset(centerX + boxWidth * 0.3, yMax),
+        whiskerPaint,
+      );
+      canvas.drawLine(
+        Offset(centerX - boxWidth * 0.3, yMin),
+        Offset(centerX + boxWidth * 0.3, yMin),
+        whiskerPaint,
+      );
+
+      final rect = Rect.fromLTRB(
+        centerX - boxWidth / 2,
+        yQ3,
+        centerX + boxWidth / 2,
+        yQ1,
+      );
+      canvas.drawRect(rect, boxFill);
+      canvas.drawRect(rect, boxBorder);
+
+      canvas.drawLine(
+        Offset(centerX - boxWidth / 2, yMedian),
+        Offset(centerX + boxWidth / 2, yMedian),
+        medianPaint,
+      );
+    }
+  }
+
+  double _mapValue(double value, double chartHeight) {
+    final clamped = value.clamp(minDb, maxDb);
+    final ratio = useLogScale
+        ? _logRatio(clamped)
+        : (clamped - minDb) / (maxDb - minDb);
+    return _topPadding + chartHeight * (1 - ratio);
+  }
+
+  double _logRatio(double value) {
+    final minAdjusted = (minDb <= 0 ? 1 : minDb).toDouble();
+    final maxAdjusted = (maxDb <= minAdjusted ? minAdjusted + 1 : maxDb).toDouble();
+    final valueAdjusted = math.max(value, minAdjusted);
+    final minLog = math.log(minAdjusted);
+    final maxLog = math.log(maxAdjusted);
+    final valueLog = math.log(valueAdjusted);
+    return ((valueLog - minLog) / (maxLog - minLog)).clamp(0, 1);
+  }
+
+  void _drawText(Canvas canvas, String text, Offset offset, TextStyle style) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+    )..layout(minWidth: 0, maxWidth: 40);
+    painter.paint(canvas, offset);
+  }
+
+  void _drawGrid(
+    Canvas canvas,
+    double chartWidth,
+    double chartHeight,
+    List<_AxisTick> xTicks,
+  ) {
+    final horizontalPaint = Paint()
+      ..color = colorScheme.outlineVariant.withValues(alpha: 0.5)
+      ..strokeWidth = 0.8;
+    final verticalPaint = Paint()
+      ..color = colorScheme.outlineVariant.withValues(alpha: 0.5)
+      ..strokeWidth = 0.8;
+
+    const divisions = 5;
+    for (var i = 1; i < divisions; i++) {
+      final y = _topPadding + chartHeight * (i / divisions);
+      canvas.drawLine(
+        Offset(_leftPadding, y),
+        Offset(_leftPadding + chartWidth, y),
+        horizontalPaint,
+      );
+    }
+
+    for (final tick in xTicks) {
+      canvas.drawLine(
+        Offset(tick.position, _topPadding),
+        Offset(tick.position, _topPadding + chartHeight),
+        verticalPaint,
+      );
+    }
+  }
+
+  void _drawThresholdBands(
+    Canvas canvas,
+    double chartWidth,
+    double chartHeight,
+  ) {
+    final safeCaution = caution.clamp(minDb, maxDb);
+    final safeDanger = danger.clamp(minDb, maxDb);
+    final cautionY = _mapValue(safeCaution, chartHeight);
+    final dangerY = _mapValue(safeDanger, chartHeight);
+    final cautionPaint = Paint()
+      ..color = Colors.yellow.withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill;
+    final dangerPaint = Paint()
+      ..color = Colors.red.withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill;
+
+    canvas.drawRect(
+      Rect.fromLTRB(
+        _leftPadding,
+        _topPadding,
+        _leftPadding + chartWidth,
+        dangerY,
+      ),
+      dangerPaint,
+    );
+    canvas.drawRect(
+      Rect.fromLTRB(
+        _leftPadding,
+        dangerY,
+        _leftPadding + chartWidth,
+        cautionY,
+      ),
+      cautionPaint,
+    );
+  }
+
+  void _drawXAxisLabels(
+    Canvas canvas,
+    double chartHeight,
+    List<_AxisTick> ticks,
+  ) {
+    final style = textStyle.copyWith(
+      color: colorScheme.onSurfaceVariant,
+      fontSize: 11,
+    );
+    for (final tick in ticks) {
+      _drawText(
+        canvas,
+        tick.label,
+        Offset(tick.position - 20, _topPadding + chartHeight + 6),
+        style,
+      );
+    }
+  }
+
+  void _drawYAxisLabel(Canvas canvas, double chartHeight) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: 'dB',
+        style: textStyle.copyWith(
+          color: colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w600,
+          fontSize: 12,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    canvas.save();
+    canvas.translate(6, _topPadding + chartHeight / 2);
+    canvas.rotate(-math.pi / 2);
+    painter.paint(
+      canvas,
+      Offset(-painter.width / 2, -painter.height / 2),
+    );
+    canvas.restore();
+  }
+
+  List<_AxisTick> _buildXTicks(double chartWidth) {
+    if (buckets.isEmpty) return const [];
+    const tickCount = 6;
+    final totalSeconds = intervalSeconds <= 0 ? 1.0 : intervalSeconds;
+    final ticks = <_AxisTick>[];
+    for (var i = 0; i < tickCount; i++) {
+      final ratio = tickCount == 1 ? 0.0 : i / (tickCount - 1);
+      final secondsFromStart = ratio * totalSeconds;
+      final secondsToNow = (totalSeconds - secondsFromStart).round();
+      final label =
+          secondsToNow <= 0 ? '0s' : '-${_formatSeconds(secondsToNow)}';
+      final position = _leftPadding + ratio * chartWidth;
+      ticks.add(_AxisTick(position: position, label: label));
+    }
+    return ticks;
+  }
+
+  String _formatSeconds(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    final minutes = seconds ~/ 60;
+    final remSeconds = seconds % 60;
+    if (minutes < 60) {
+      return '${minutes}m ${remSeconds.toString().padLeft(2, '0')}s';
+    }
+    final hours = minutes ~/ 60;
+    final remMinutes = minutes % 60;
+    return '${hours}h ${remMinutes.toString().padLeft(2, '0')}m';
+  }
+
+  @override
+  bool shouldRepaint(covariant _BoxPlotPainter oldDelegate) {
+    return oldDelegate.buckets != buckets ||
+        oldDelegate.minDb != minDb ||
+        oldDelegate.maxDb != maxDb ||
+        oldDelegate.colorScheme != colorScheme;
+  }
+}
+
+class _AxisTick {
+  const _AxisTick({required this.position, required this.label});
+
+  final double position;
+  final String label;
+}
+
+
 Future<void> _exportHistogram(BuildContext context) async {
   final controller = context.read<MonitorController>();
   final buckets = controller.histogramBuckets;
@@ -722,9 +951,9 @@ class _HistogramToggle extends StatelessWidget {
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: secondaryColor,
                   ),
-                ),
-              ],
             ),
+        ],
+      ),
           ),
           Switch.adaptive(
             value: isVisible,
@@ -765,6 +994,8 @@ class _ControlsWrap extends StatelessWidget {
     required this.onAbout,
     required this.mode,
     required this.onModeChanged,
+    required this.useLogScale,
+    required this.onToggleLogScale,
   });
 
   final bool isRecording;
@@ -774,6 +1005,8 @@ class _ControlsWrap extends StatelessWidget {
   final VoidCallback onAbout;
   final InsightMode mode;
   final ValueChanged<InsightMode> onModeChanged;
+  final bool useLogScale;
+  final ValueChanged<bool> onToggleLogScale;
 
   @override
   Widget build(BuildContext context) {
@@ -834,18 +1067,25 @@ class _ControlsWrap extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: SegmentedButton<InsightMode>(
-                segments: const [
-                  ButtonSegment(value: InsightMode.chart, label: Text('Chart')),
+            segments: const [
+              ButtonSegment(value: InsightMode.chart, label: Text('Chart')),
                   ButtonSegment(
                     value: InsightMode.hist,
                     label: Text('Histogram'),
                   ),
-                  ButtonSegment(value: InsightMode.stats, label: Text('Stats')),
-                ],
-                showSelectedIcon: false,
-                selected: {mode},
-                onSelectionChanged: (value) => onModeChanged(value.first),
-              ),
+              ButtonSegment(value: InsightMode.stats, label: Text('Stats')),
+            ],
+            showSelectedIcon: false,
+            selected: {mode},
+            onSelectionChanged: (value) => onModeChanged(value.first),
+          ),
+            ),
+            SwitchListTile(
+              title: const Text('Logarithmic Y-axis'),
+              value: useLogScale,
+              onChanged: onToggleLogScale,
+              dense: true,
+              contentPadding: EdgeInsets.zero,
             ),
           ],
         );
@@ -867,7 +1107,12 @@ class _RecordPauseButtons extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final borderColor = Theme.of(context).colorScheme.outline;
+    final colorScheme = Theme.of(context).colorScheme;
+    final borderColor = colorScheme.outline;
+    final recordColor =
+        isRecording ? Colors.redAccent : colorScheme.outlineVariant;
+    final pauseColor =
+        isRecording ? colorScheme.outlineVariant : const Color(0xFF0D47A1);
     final iconStyle = IconButton.styleFrom(
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       minimumSize: const Size(40, 40),
@@ -883,10 +1128,13 @@ class _RecordPauseButtons extends StatelessWidget {
           IconButton(
             tooltip: 'Record',
             style: iconStyle,
-            onPressed: isRecording ? null : onStart,
-            icon: const Icon(
+            onPressed: () {
+              if (isRecording) return;
+              onStart?.call();
+            },
+            icon: Icon(
               Icons.fiber_manual_record,
-              color: Colors.redAccent,
+              color: recordColor,
             ),
           ),
           SizedBox(
@@ -900,8 +1148,14 @@ class _RecordPauseButtons extends StatelessWidget {
           IconButton(
             tooltip: 'Pause',
             style: iconStyle,
-            onPressed: isRecording ? onPause : null,
-            icon: const Icon(Icons.pause),
+            onPressed: () {
+              if (!isRecording) return;
+              onPause?.call();
+            },
+            icon: Icon(
+              Icons.pause,
+              color: pauseColor,
+            ),
           ),
         ],
       ),
@@ -977,9 +1231,9 @@ class _IntervalsCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: () => _exportHistory(context),
-                    icon: const Icon(Icons.ios_share),
-                    label: const Text('Export history'),
+              onPressed: () => _exportHistory(context),
+              icon: const Icon(Icons.ios_share),
+              label: const Text('Export history'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1180,7 +1434,7 @@ Future<void> _showLevelsInfo(BuildContext context) {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+                        onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
           ),
         ],
