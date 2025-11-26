@@ -376,6 +376,7 @@ class _HistogramCard extends StatelessWidget {
                     context,
                     visibleEntries,
                     maxSeconds == 0 ? 1 : maxSeconds,
+                    _exposureScaleFor(maxSeconds),
                   ),
                 ),
               ),
@@ -423,6 +424,7 @@ class _HistogramCard extends StatelessWidget {
     BuildContext context,
     List<MapEntry<int, HistogramBucket>> entries,
     double maxValue,
+    _ExposureScale scale,
   ) {
     final theme = Theme.of(context);
     final groups = <BarChartGroupData>[];
@@ -457,7 +459,7 @@ class _HistogramCard extends StatelessWidget {
         bottomTitles: AxisTitles(
           sideTitles: SideTitles(
             showTitles: true,
-            reservedSize: 36,
+            reservedSize: 48,
             getTitlesWidget: (value, meta) {
               final index = value.toInt();
               if (index < 0 || index >= entries.length) {
@@ -465,7 +467,7 @@ class _HistogramCard extends StatelessWidget {
               }
               final bucket = entries[index].value;
               return Transform.rotate(
-                angle: -math.pi / 4,
+                angle: -math.pi / 2,
                 child: Text(
                   '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()}',
                   style: Theme.of(context).textTheme.bodySmall,
@@ -475,11 +477,19 @@ class _HistogramCard extends StatelessWidget {
           ),
         ),
         leftTitles: AxisTitles(
+          axisNameWidget: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Time (${scale.unit})',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
           sideTitles: SideTitles(
             showTitles: true,
             reservedSize: 48,
-            getTitlesWidget: (value, meta) =>
-                Text(_formatExposure(value.toDouble())),
+            getTitlesWidget: (value, meta) => Text(
+              _formatExposureTick(value.toDouble(), scale),
+            ),
           ),
         ),
       ),
@@ -790,7 +800,7 @@ class _BoxPlotPainter extends CustomPainter {
     )..layout();
 
     canvas.save();
-    canvas.translate(6, _topPadding + chartHeight / 2);
+    canvas.translate(-4, _topPadding + chartHeight / 2);
     canvas.rotate(-math.pi / 2);
     painter.paint(
       canvas,
@@ -908,7 +918,7 @@ class _HistogramToggle extends StatelessWidget {
     final secondaryColor =
         theme.textTheme.bodySmall?.color?.withValues(alpha: 0.7);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: theme.colorScheme.outlineVariant),
@@ -917,22 +927,24 @@ class _HistogramToggle extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()} dB',
-                  style: theme.textTheme.labelLarge,
+                Flexible(
+                  child: Text(
+                    '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()} dB',
+                    style: theme.textTheme.labelLarge,
+                  ),
                 ),
+                const SizedBox(width: 8),
                 Text(
                   _formatExposure(bucket.seconds),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: secondaryColor,
                   ),
+                ),
+              ],
             ),
-        ],
-      ),
           ),
           Switch.adaptive(
             value: isVisible,
@@ -942,6 +954,34 @@ class _HistogramToggle extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ExposureScale {
+  const _ExposureScale({required this.divisor, required this.unit});
+
+  final double divisor;
+  final String unit;
+}
+
+_ExposureScale _exposureScaleFor(double seconds) {
+  if (seconds < 60) {
+    return const _ExposureScale(divisor: 1, unit: 's');
+  }
+  if (seconds < 3600) {
+    return const _ExposureScale(divisor: 60, unit: 'min');
+  }
+  if (seconds < 86400) {
+    return const _ExposureScale(divisor: 3600, unit: 'h');
+  }
+  return const _ExposureScale(divisor: 86400, unit: 'd');
+}
+
+String _formatExposureTick(double seconds, _ExposureScale scale) {
+  final divisor = scale.divisor == 0 ? 1 : scale.divisor;
+  final value = seconds / divisor;
+  if (value >= 100) return value.toStringAsFixed(0);
+  if (value >= 10) return value.toStringAsFixed(1);
+  return value.toStringAsFixed(2);
 }
 
 String _formatExposure(double seconds) {
