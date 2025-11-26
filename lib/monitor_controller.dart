@@ -67,12 +67,14 @@ class SamplePoint {
     required this.minDb,
     required this.meanDb,
     required this.maxDb,
+    required this.positionSeconds,
   });
 
   final DateTime timestamp;
   final double minDb;
   final double meanDb;
   final double maxDb;
+  final double positionSeconds;
 }
 
 class MonitorController extends ChangeNotifier {
@@ -122,6 +124,8 @@ class MonitorController extends ChangeNotifier {
       List<double>.filled(_histogramBinCount, 0);
   DateTime? _lastSampleTimestamp;
   double? _lastSampleDb;
+  double _chartElapsedSeconds = 0;
+  final Set<int> _hiddenHistogramBins = <int>{};
 
   bool get isRecording => _isRecording;
   double? get currentDb => _currentDb;
@@ -132,6 +136,7 @@ class MonitorController extends ChangeNotifier {
   List<IntervalSnapshot> get sessionSeries =>
       List.unmodifiable(_history.reversed.toList());
   List<SamplePoint> get intervalSamples => List.unmodifiable(_sampleBuffer);
+  Set<int> get hiddenHistogramBins => Set.unmodifiable(_hiddenHistogramBins);
   String? get errorMessage => _errorMessage;
   double get cautionThreshold => _cautionThreshold;
   double get dangerThreshold => _dangerThreshold;
@@ -240,6 +245,28 @@ class MonitorController extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool isHistogramBinVisible(int index) {
+    if (index < 0 || index >= _histogramSeconds.length) return true;
+    return !_hiddenHistogramBins.contains(index);
+  }
+
+  void setHistogramBinVisibility(int index, bool isVisible) {
+    if (index < 0 || index >= _histogramSeconds.length) return;
+    final changed = isVisible
+        ? _hiddenHistogramBins.remove(index)
+        : _hiddenHistogramBins.add(index);
+    if (!changed) return;
+    notifyListeners();
+    _persistHistogramVisibility();
+  }
+
+  void showAllHistogramBins() {
+    if (_hiddenHistogramBins.isEmpty) return;
+    _hiddenHistogramBins.clear();
+    notifyListeners();
+    _persistHistogramVisibility();
+  }
+
   void clearError() {
     _errorMessage = null;
     notifyListeners();
@@ -297,22 +324,25 @@ class MonitorController extends ChangeNotifier {
       value = 0;
     }
     final now = DateTime.now();
+    double deltaSeconds = 0;
     if (_lastSampleTimestamp != null && _lastSampleDb != null) {
-      final seconds =
+      deltaSeconds =
           now.difference(_lastSampleTimestamp!).inMilliseconds / 1000.0;
-      if (seconds > 0) {
-        _accumulateHistogram(_lastSampleDb!, seconds);
+      if (deltaSeconds > 0) {
+        _accumulateHistogram(_lastSampleDb!, deltaSeconds);
+      } else {
+        deltaSeconds = 0;
       }
     }
-    _lastSampleTimestamp = now;
-    _lastSampleDb = value;
     _currentDb =
         _currentDb == null ? value : value * smoothingAlpha + _currentDb! * (1 - smoothingAlpha);
     _windowSum += value;
     _windowCount++;
     _windowMin = _windowMin == null ? value : min(_windowMin!, value);
     _windowMax = _windowMax == null ? value : max(_windowMax!, value);
-    _addSamplePoint(value);
+    _addSamplePoint(value, now, deltaSeconds);
+    _lastSampleTimestamp = now;
+    _lastSampleDb = value;
     _updateActiveBand(value);
     notifyListeners();
   }
@@ -449,14 +479,18 @@ class MonitorController extends ChangeNotifier {
     }
   }
 
-  void _addSamplePoint(double reading) {
-    final now = DateTime.now();
+  void _addSamplePoint(double reading, DateTime now, double deltaSeconds) {
     _windowStart ??= now;
+    if (!deltaSeconds.isFinite || deltaSeconds < 0) {
+      deltaSeconds = 0;
+    }
+    _chartElapsedSeconds += deltaSeconds;
     final sample = SamplePoint(
       timestamp: now,
       minDb: _windowMin ?? reading,
       meanDb: reading,
       maxDb: _windowMax ?? reading,
+      positionSeconds: _chartElapsedSeconds,
     );
     _sampleBuffer.add(sample);
     _trimSamples();
@@ -484,6 +518,8 @@ class MonitorController extends ChangeNotifier {
     }
     _lastSampleTimestamp = null;
     _lastSampleDb = null;
+    _sampleBuffer.clear();
+    _chartElapsedSeconds = 0;
     if (!silent) {
       notifyListeners();
     }
@@ -527,6 +563,16 @@ class MonitorController extends ChangeNotifier {
         prefs.getDouble(_thresholdCrossingKey) ?? defaultCrossingSeconds;
     _thresholdCrossingSeconds = crossingSeconds.clamp(0.1, 1.0);
 
+    final hiddenBins = prefs.getStringList(_histogramHiddenKey);
+    if (hiddenBins != null) {
+      _hiddenHistogramBins
+        ..clear()
+        ..addAll(hiddenBins
+            .map(int.tryParse)
+            .whereType<int>()
+            .where((index) => index >= 0 && index < _histogramSeconds.length));
+    }
+
     notifyListeners();
   }
 
@@ -538,6 +584,14 @@ class MonitorController extends ChangeNotifier {
   Future<void> _persistPalette() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_paletteKey, _paletteMode.name);
+  }
+
+  Future<void> _persistHistogramVisibility() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _histogramHiddenKey,
+      _hiddenHistogramBins.map((index) => index.toString()).toList(),
+    );
   }
 
   _PaletteColors _paletteForMode(PaletteMode mode) {
@@ -571,6 +625,7 @@ class MonitorController extends ChangeNotifier {
   static const _paletteKey = 'palette_mode';
   static const _intervalKey = 'recording_interval_minutes';
   static const _thresholdCrossingKey = 'threshold_crossing_seconds';
+  static const _histogramHiddenKey = 'histogram_hidden_bins';
 }
 
 class _PaletteColors {

@@ -287,7 +287,12 @@ class _LevelChart extends StatelessWidget {
                   _buildChartData(
                     context,
                     controller,
-                    _buildSpots(samples, (p) => p.meanDb, now, windowSeconds),
+                    _buildSpots(
+                      samples,
+                      (p) => p.meanDb,
+                      now,
+                      windowSeconds,
+                    ),
                     minY,
                     maxY,
                     windowSeconds,
@@ -411,6 +416,9 @@ class _LevelChart extends StatelessWidget {
     DateTime now,
     double windowSeconds,
   ) {
+    if (samples.isEmpty) {
+      return const [];
+    }
     return samples.map((sample) {
       final ageSeconds =
           now.difference(sample.timestamp).inMilliseconds / 1000.0;
@@ -437,15 +445,8 @@ class _LevelChart extends StatelessWidget {
   }
 }
 
-class _HistogramCard extends StatefulWidget {
+class _HistogramCard extends StatelessWidget {
   const _HistogramCard({super.key});
-
-  @override
-  State<_HistogramCard> createState() => _HistogramCardState();
-}
-
-class _HistogramCardState extends State<_HistogramCard> {
-  final Set<int> _hiddenBins = <int>{};
 
   @override
   Widget build(BuildContext context) {
@@ -453,10 +454,10 @@ class _HistogramCardState extends State<_HistogramCard> {
     final buckets = controller.histogramBuckets;
     final visibleEntries = <MapEntry<int, HistogramBucket>>[];
     for (var i = 0; i < buckets.length; i++) {
-      if (_hiddenBins.contains(i)) continue;
+      if (!controller.isHistogramBinVisible(i)) continue;
       visibleEntries.add(MapEntry(i, buckets[i]));
     }
-    final hasHidden = _hiddenBins.isNotEmpty;
+    final hasHidden = controller.hiddenHistogramBins.isNotEmpty;
     final totalSeconds = buckets.fold<double>(
       0,
       (sum, bucket) => sum + bucket.seconds,
@@ -484,7 +485,7 @@ class _HistogramCardState extends State<_HistogramCard> {
                 ),
                 if (hasHidden)
                   TextButton(
-                    onPressed: () => setState(_hiddenBins.clear),
+                    onPressed: () => controller.showAllHistogramBins(),
                     child: const Text('Reset bins'),
                   ),
               ],
@@ -509,7 +510,7 @@ class _HistogramCardState extends State<_HistogramCard> {
                     children: [
                       const Text('All bins hidden.'),
                       TextButton(
-                        onPressed: () => setState(_hiddenBins.clear),
+                        onPressed: () => controller.showAllHistogramBins(),
                         child: const Text('Show all bins'),
                       ),
                     ],
@@ -528,6 +529,15 @@ class _HistogramCardState extends State<_HistogramCard> {
                 ),
               ),
             const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                onPressed: () => _exportHistogram(context),
+                icon: const Icon(Icons.ios_share),
+                label: const Text('Export histogram'),
+              ),
+            ),
+            const SizedBox(height: 8),
             if (totalSeconds > 0)
               LayoutBuilder(
                 builder: (context, constraints) {
@@ -543,14 +553,9 @@ class _HistogramCardState extends State<_HistogramCard> {
                           width: tileWidth,
                           child: _HistogramToggle(
                             bucket: buckets[i],
-                            isVisible: !_hiddenBins.contains(i),
-                            onChanged: (value) => setState(() {
-                              if (value) {
-                                _hiddenBins.remove(i);
-                              } else {
-                                _hiddenBins.add(i);
-                              }
-                            }),
+                            isVisible: controller.isHistogramBinVisible(i),
+                            onChanged: (value) => controller
+                                .setHistogramBinVisibility(i, value),
                           ),
                         ),
                     ],
@@ -629,6 +634,52 @@ class _HistogramCardState extends State<_HistogramCard> {
       ),
       barGroups: groups,
     );
+  }
+}
+
+Future<void> _exportHistogram(BuildContext context) async {
+  final controller = context.read<MonitorController>();
+  final buckets = controller.histogramBuckets;
+  if (buckets.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('No histogram data to export yet.')),
+    );
+    return;
+  }
+
+  final buffer = StringBuffer('bin_lower_db,bin_upper_db,seconds\n');
+  for (final bucket in buckets) {
+    buffer.writeln(
+      '${bucket.lowerBound.toStringAsFixed(0)},'
+      '${bucket.upperBound.toStringAsFixed(0)},'
+      '${bucket.seconds.toStringAsFixed(2)}',
+    );
+  }
+
+  try {
+    final dir = await getTemporaryDirectory();
+    final filename =
+        'histogram_${DateTime.now().millisecondsSinceEpoch}.csv';
+    final file = File('${dir.path}/$filename');
+    await file.writeAsString(buffer.toString());
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [
+          XFile(
+            file.path,
+            mimeType: 'text/csv',
+            name: 'histogram.csv',
+          ),
+        ],
+        text: 'Sound level histogram export',
+      ),
+    );
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Export failed: $error')),
+      );
+    }
   }
 }
 
