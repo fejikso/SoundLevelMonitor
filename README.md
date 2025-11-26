@@ -4,9 +4,11 @@ A minimal Flutter app that measures ambient noise through the device microphone,
 
 ## Features
 - Live decibel reading with bright color feedback that latches for 10 seconds after each threshold breach
-- Configurable recording interval (15 seconds to 5 minutes) plus live min/mean/max stats for every interval
-- Adjustable yellow/red thresholds with an in-app guidance table
-- Options screen with a “keep screen awake” toggle to prevent the display from sleeping
+- Real-time interval chart that matches the recording length (30 s default), pans continuously, shades the caution/danger bands, and overlays mean/max guide lines
+- Adjustable recording interval (15 seconds to 5 minutes, default 30 s) from the Options screen, plus live min/mean/max stats for every interval
+- Adjustable yellow/red thresholds with an in-app guidance table and palette selector (normal vs. high-contrast)
+- Spreadsheet-style interval history card with built-in export button
+- Options screen with a “keep screen awake” toggle (enabled by default) to prevent the display from sleeping, plus palette and interval settings that persist between launches
 - Record, Pause, Export (CSV share sheet), About with GitHub/support links
 
 ## Prerequisites
@@ -40,7 +42,7 @@ Follow these steps after the app installs:
    - Watch the color band: green (calm) should change to orange/red as levels rise.
 
 3. **Interval storage**
-   - Leave the app recording for at least one full interval (default 1 minute; adjust via the slider if you want a quicker test).
+   - Leave the app recording for at least one full interval (default 1 minute; adjust via Options → Recording interval slider if you want a quicker test).
    - After the interval completes, ensure a new entry appears under “Recorded intervals” showing min/mean/max.
 
 4. **Pause & resume**

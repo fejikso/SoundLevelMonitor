@@ -4,7 +4,10 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:noise_meter/noise_meter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+enum PaletteMode { normal, highContrast }
 
 class ThresholdBand {
   const ThresholdBand({
@@ -46,34 +49,58 @@ class IntervalStats {
   final double maxDb;
 }
 
+class SamplePoint {
+  SamplePoint({
+    required this.timestamp,
+    required this.minDb,
+    required this.meanDb,
+    required this.maxDb,
+  });
+
+  final DateTime timestamp;
+  final double minDb;
+  final double meanDb;
+  final double maxDb;
+}
+
 class MonitorController extends ChangeNotifier {
+  static const double smoothingAlpha = 0.1;
+  static const double defaultCrossingSeconds = 0.2;
+
   MonitorController() {
     _refreshThresholds();
     _activeBandIndex = _thresholdIndexFor(0);
+    _restorePreferences();
   }
 
-  static const Duration _holdDuration = Duration(seconds: 10);
+  static const Duration thresholdHoldDuration = Duration(seconds: 5);
   final NoiseMeter _noiseMeter = NoiseMeter();
   StreamSubscription<NoiseReading>? _noiseSubscription;
   Timer? _intervalTimer;
 
   bool _isRecording = false;
   double? _currentDb;
-  Duration _interval = const Duration(minutes: 1);
+  Duration _interval = const Duration(milliseconds: 30000);
   late final List<ThresholdBand> _thresholds;
   String? _errorMessage;
   int _activeBandIndex = 0;
   DateTime? _bandHoldUntil;
-  double _cautionThreshold = 65;
-  double _dangerThreshold = 75;
+  double _cautionThreshold = 70;
+  double _dangerThreshold = 80;
   int _flashCounter = 0;
   bool _keepScreenAwake = false;
+  PaletteMode _paletteMode = PaletteMode.normal;
+  DateTime? _windowStart;
+  int? _pendingBandIndex;
+  DateTime? _pendingBandStart;
 
   int _windowCount = 0;
   double _windowSum = 0;
   double? _windowMin;
   double? _windowMax;
   final List<IntervalSnapshot> _history = [];
+  final List<SamplePoint> _sampleBuffer = [];
+  double _thresholdCrossingSeconds = defaultCrossingSeconds;
 
   bool get isRecording => _isRecording;
   double? get currentDb => _currentDb;
@@ -81,11 +108,16 @@ class MonitorController extends ChangeNotifier {
   double get intervalMinutes => _interval.inSeconds / 60;
   List<ThresholdBand> get thresholds => List.unmodifiable(_thresholds);
   List<IntervalSnapshot> get history => List.unmodifiable(_history);
+  List<IntervalSnapshot> get sessionSeries =>
+      List.unmodifiable(_history.reversed.toList());
+  List<SamplePoint> get intervalSamples => List.unmodifiable(_sampleBuffer);
   String? get errorMessage => _errorMessage;
   double get cautionThreshold => _cautionThreshold;
   double get dangerThreshold => _dangerThreshold;
   int get flashCounter => _flashCounter;
   bool get keepScreenAwake => _keepScreenAwake;
+  PaletteMode get paletteMode => _paletteMode;
+  double get thresholdCrossingSeconds => _thresholdCrossingSeconds;
   IntervalStats? get currentIntervalStats => _windowCount == 0
       ? null
       : IntervalStats(
@@ -119,6 +151,7 @@ class MonitorController extends ChangeNotifier {
         cancelOnError: true,
       );
       _isRecording = true;
+      _windowStart = DateTime.now();
       _startIntervalTimer();
       notifyListeners();
     } on Exception catch (error) {
@@ -138,6 +171,7 @@ class MonitorController extends ChangeNotifier {
     await _noiseSubscription?.cancel();
     _noiseSubscription = null;
     _finalizeWindow(includePartial: true);
+    _windowStart = null;
     notifyListeners();
   }
 
@@ -151,6 +185,8 @@ class MonitorController extends ChangeNotifier {
     } else {
       notifyListeners();
     }
+    _trimSamples();
+    _persistInterval();
   }
 
   void clearHistory() {
@@ -186,6 +222,23 @@ class MonitorController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setPaletteMode(PaletteMode mode) {
+    if (_paletteMode == mode) return;
+    _paletteMode = mode;
+    _refreshThresholds();
+    notifyListeners();
+    _persistPalette();
+  }
+
+  Future<void> setThresholdCrossingSeconds(double seconds) async {
+    final clamped = seconds.clamp(0.1, 1.0);
+    if ((clamped - _thresholdCrossingSeconds).abs() < 0.0001) return;
+    _thresholdCrossingSeconds = clamped;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_thresholdCrossingKey, clamped);
+  }
+
   @override
   void dispose() {
     WakelockPlus.disable();
@@ -197,13 +250,14 @@ class MonitorController extends ChangeNotifier {
     if (!value.isFinite) {
       value = 0;
     }
-    _currentDb = value;
+    _currentDb =
+        _currentDb == null ? value : value * smoothingAlpha + _currentDb! * (1 - smoothingAlpha);
     _windowSum += value;
     _windowCount++;
     _windowMin = _windowMin == null ? value : min(_windowMin!, value);
     _windowMax = _windowMax == null ? value : max(_windowMax!, value);
-    final meanValue = _windowSum / _windowCount;
-    _updateActiveBand(meanValue);
+    _addSamplePoint(value);
+    _updateActiveBand(value);
     notifyListeners();
   }
 
@@ -255,34 +309,37 @@ class MonitorController extends ChangeNotifier {
     _windowCount = 0;
     _windowMin = null;
     _windowMax = null;
+    _windowStart = DateTime.now();
+    _trimSamples();
     notifyListeners();
   }
 
   void _refreshThresholds() {
+    final palette = _paletteForMode(_paletteMode);
     _thresholds = [
-      const ThresholdBand(
+      ThresholdBand(
         limitDb: 55,
         label: 'Calm',
-        color: Color(0xFF1B5E20),
-        foreground: Colors.white,
+        color: palette.calmColor,
+        foreground: palette.calmForeground,
       ),
       ThresholdBand(
         limitDb: _cautionThreshold,
         label: 'Caution',
-        color: const Color(0xFFFFC107),
-        foreground: Colors.black,
+        color: palette.cautionColor,
+        foreground: palette.cautionForeground,
       ),
       ThresholdBand(
         limitDb: _dangerThreshold,
         label: 'Danger',
-        color: const Color(0xFFFF3D00),
-        foreground: Colors.white,
+        color: palette.dangerColor,
+        foreground: palette.dangerForeground,
       ),
-      const ThresholdBand(
+      ThresholdBand(
         limitDb: double.infinity,
         label: 'Hazard',
-        color: Color(0xFFB71C1C),
-        foreground: Colors.white,
+        color: palette.hazardColor,
+        foreground: palette.hazardForeground,
       ),
     ];
   }
@@ -299,10 +356,22 @@ class MonitorController extends ChangeNotifier {
   void _updateActiveBand(double value) {
     final now = DateTime.now();
     final newIndex = _thresholdIndexFor(value);
+    final requiredHold = Duration(
+      milliseconds: (_thresholdCrossingSeconds * 1000).round(),
+    );
+
     if (newIndex > _activeBandIndex) {
-      _activeBandIndex = newIndex;
-      _bandHoldUntil = now.add(_holdDuration);
-      _flashCounter++;
+      if (_pendingBandIndex != newIndex) {
+        _pendingBandIndex = newIndex;
+        _pendingBandStart = now;
+      }
+      if (now.difference(_pendingBandStart ?? now) >= requiredHold) {
+        _activeBandIndex = newIndex;
+        _bandHoldUntil = now.add(thresholdHoldDuration);
+        _flashCounter++;
+        _pendingBandIndex = null;
+        _pendingBandStart = null;
+      }
       return;
     }
     if (newIndex < _activeBandIndex) {
@@ -311,11 +380,143 @@ class MonitorController extends ChangeNotifier {
       }
       _activeBandIndex = newIndex;
       _bandHoldUntil = null;
+      _pendingBandIndex = null;
+      _pendingBandStart = null;
       return;
     }
     if (_bandHoldUntil != null && now.isAfter(_bandHoldUntil!)) {
       _bandHoldUntil = null;
     }
+    if (newIndex <= _activeBandIndex) {
+      _pendingBandIndex = null;
+      _pendingBandStart = null;
+    }
   }
+
+  void _addSamplePoint(double reading) {
+    final now = DateTime.now();
+    _windowStart ??= now;
+    final sample = SamplePoint(
+      timestamp: now,
+      minDb: _windowMin ?? reading,
+      meanDb: reading,
+      maxDb: _windowMax ?? reading,
+    );
+    _sampleBuffer.add(sample);
+    _trimSamples();
+  }
+
+  void _trimSamples() {
+    final cutoff = DateTime.now().subtract(_interval);
+    while (_sampleBuffer.isNotEmpty &&
+        _sampleBuffer.first.timestamp.isBefore(cutoff)) {
+      _sampleBuffer.removeAt(0);
+    }
+  }
+
+  Future<void> _restorePreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    final keepAwake = prefs.getBool(_keepAwakeKey);
+    final paletteName = prefs.getString(_paletteKey);
+    final minutes = prefs.getDouble(_intervalKey);
+
+    if (keepAwake != null) {
+      _keepScreenAwake = keepAwake;
+      if (keepAwake) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+    } else {
+      _keepScreenAwake = true;
+      await WakelockPlus.enable();
+    }
+
+    if (paletteName != null) {
+      final restored = PaletteMode.values.firstWhere(
+        (mode) => mode.name == paletteName,
+        orElse: () => _paletteMode,
+      );
+      _paletteMode = restored;
+      _refreshThresholds();
+    }
+
+    if (minutes != null) {
+      _interval = Duration(
+        milliseconds:
+            (minutes.clamp(0.25, 10.0) * Duration.millisecondsPerMinute).round(),
+      );
+    }
+
+    final crossingSeconds =
+        prefs.getDouble(_thresholdCrossingKey) ?? defaultCrossingSeconds;
+    _thresholdCrossingSeconds = crossingSeconds.clamp(0.1, 1.0);
+
+    notifyListeners();
+  }
+
+  Future<void> _persistInterval() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_intervalKey, _interval.inSeconds / 60);
+  }
+
+  Future<void> _persistPalette() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_paletteKey, _paletteMode.name);
+  }
+
+  _PaletteColors _paletteForMode(PaletteMode mode) {
+    switch (mode) {
+      case PaletteMode.highContrast:
+        return const _PaletteColors(
+          calmColor: Color(0xFF00E676),
+          calmForeground: Colors.black,
+          cautionColor: Color(0xFFFFFF00),
+          cautionForeground: Colors.black,
+          dangerColor: Color(0xFFFF1744),
+          dangerForeground: Colors.white,
+          hazardColor: Color(0xFFFF6D00),
+          hazardForeground: Colors.black,
+        );
+      case PaletteMode.normal:
+        return const _PaletteColors(
+          calmColor: Color(0xFF1B5E20),
+          calmForeground: Colors.white,
+          cautionColor: Color(0xFFFFC107),
+          cautionForeground: Colors.black,
+          dangerColor: Color(0xFFFF3D00),
+          dangerForeground: Colors.white,
+          hazardColor: Color(0xFFB71C1C),
+          hazardForeground: Colors.white,
+        );
+    }
+  }
+
+  static const _keepAwakeKey = 'keep_screen_awake';
+  static const _paletteKey = 'palette_mode';
+  static const _intervalKey = 'recording_interval_minutes';
+  static const _thresholdCrossingKey = 'threshold_crossing_seconds';
+}
+
+class _PaletteColors {
+  const _PaletteColors({
+    required this.calmColor,
+    required this.calmForeground,
+    required this.cautionColor,
+    required this.cautionForeground,
+    required this.dangerColor,
+    required this.dangerForeground,
+    required this.hazardColor,
+    required this.hazardForeground,
+  });
+
+  final Color calmColor;
+  final Color calmForeground;
+  final Color cautionColor;
+  final Color cautionForeground;
+  final Color dangerColor;
+  final Color dangerForeground;
+  final Color hazardColor;
+  final Color hazardForeground;
 }
 
