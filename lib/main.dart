@@ -371,12 +371,15 @@ class _HistogramCard extends StatelessWidget {
             else
               SizedBox(
                 height: 220,
-                child: BarChart(
-                  _buildChartData(
-                    context,
-                    visibleEntries,
-                    maxSeconds == 0 ? 1 : maxSeconds,
-                    _exposureScaleFor(maxSeconds),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: BarChart(
+                    _buildChartData(
+                      context,
+                      visibleEntries,
+                      maxSeconds == 0 ? 1 : maxSeconds,
+                      _exposureScaleFor(maxSeconds),
+                    ),
                   ),
                 ),
               ),
@@ -427,6 +430,9 @@ class _HistogramCard extends StatelessWidget {
     _ExposureScale scale,
   ) {
     final theme = Theme.of(context);
+    final labelStyle =
+        theme.textTheme.bodySmall?.copyWith(fontSize: 10) ??
+            const TextStyle(fontSize: 10);
     final groups = <BarChartGroupData>[];
     for (var i = 0; i < entries.length; i++) {
       final bucket = entries[i].value;
@@ -436,7 +442,7 @@ class _HistogramCard extends StatelessWidget {
           barRods: [
             BarChartRodData(
               toY: bucket.seconds,
-              width: 14,
+              width: 24,
               borderRadius: BorderRadius.circular(6),
               color: theme.colorScheme.primary,
               rodStackItems: [],
@@ -448,6 +454,8 @@ class _HistogramCard extends StatelessWidget {
     return BarChartData(
       minY: 0,
       maxY: maxValue * 1.1,
+      alignment: BarChartAlignment.spaceBetween,
+      groupsSpace: 4,
       gridData: FlGridData(show: true, horizontalInterval: maxValue / 4),
       borderData: FlBorderData(
         show: true,
@@ -470,7 +478,7 @@ class _HistogramCard extends StatelessWidget {
                 angle: -math.pi / 2,
                 child: Text(
                   '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()}',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  style: labelStyle,
                 ),
               );
             },
@@ -484,11 +492,13 @@ class _HistogramCard extends StatelessWidget {
               style: theme.textTheme.bodySmall,
             ),
           ),
+          axisNameSize: 28,
           sideTitles: SideTitles(
             showTitles: true,
             reservedSize: 48,
             getTitlesWidget: (value, meta) => Text(
               _formatExposureTick(value.toDouble(), scale),
+              style: labelStyle,
             ),
           ),
         ),
