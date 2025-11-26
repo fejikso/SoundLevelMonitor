@@ -77,6 +77,8 @@ class SamplePoint {
   final double positionSeconds;
 }
 
+enum ChartVisualization { boxPlot, linePlot }
+
 class SecondBoxStats {
   SecondBoxStats({
     required this.start,
@@ -145,8 +147,10 @@ class MonitorController extends ChangeNotifier {
   double _chartElapsedSeconds = 0;
   final Set<int> _hiddenHistogramBins = <int>{};
   final List<SecondBoxStats> _secondBuckets = [];
-  final List<double> _currentSecondSamples = [];
-  int? _currentSecondKey;
+  final List<double> _currentBinSamples = [];
+  int? _currentBinKey;
+  double _boxBinSeconds = 0.25;
+  ChartVisualization _chartVisualization = ChartVisualization.boxPlot;
 
   bool get isRecording => _isRecording;
   double? get currentDb => _currentDb;
@@ -159,6 +163,8 @@ class MonitorController extends ChangeNotifier {
   List<SamplePoint> get intervalSamples => List.unmodifiable(_sampleBuffer);
   Set<int> get hiddenHistogramBins => Set.unmodifiable(_hiddenHistogramBins);
   List<SecondBoxStats> get secondBuckets => List.unmodifiable(_secondBuckets);
+  double get boxBinSeconds => _boxBinSeconds;
+  ChartVisualization get chartVisualization => _chartVisualization;
   String? get errorMessage => _errorMessage;
   double get cautionThreshold => _cautionThreshold;
   double get dangerThreshold => _dangerThreshold;
@@ -260,7 +266,25 @@ class MonitorController extends ChangeNotifier {
       notifyListeners();
     }
     _trimSamples();
+    _trimBoxBuckets();
     _persistInterval();
+  }
+
+  Future<void> setBoxBinSeconds(double seconds) async {
+    if ((seconds - _boxBinSeconds).abs() < 0.0001) return;
+    _boxBinSeconds = seconds;
+    _resetBoxBuckets();
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_boxBinSecondsKey, seconds);
+  }
+
+  Future<void> setChartVisualization(ChartVisualization visualization) async {
+    if (_chartVisualization == visualization) return;
+    _chartVisualization = visualization;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_chartVisualizationKey, visualization.name);
   }
 
   void clearHistory() {
@@ -360,13 +384,18 @@ class MonitorController extends ChangeNotifier {
     }
     _currentDb =
         _currentDb == null ? value : value * smoothingAlpha + _currentDb! * (1 - smoothingAlpha);
-    final secondKey = now.millisecondsSinceEpoch ~/ 1000;
-    _currentSecondKey ??= secondKey;
-    if (secondKey != _currentSecondKey) {
+
+    final bucketDurationMs = _bucketDurationMilliseconds;
+    final bucketKey = bucketDurationMs <= 0
+        ? now.millisecondsSinceEpoch
+        : (now.millisecondsSinceEpoch ~/ bucketDurationMs) * bucketDurationMs;
+    _currentBinKey ??= bucketKey;
+    if (bucketKey != _currentBinKey) {
       _finalizeSecondBucket();
-      _currentSecondKey = secondKey;
+      _currentBinKey = bucketKey;
+      _currentBinSamples.clear();
     }
-    _currentSecondSamples.add(value);
+    _currentBinSamples.add(value);
 
     _windowSum += value;
     _windowCount++;
@@ -560,26 +589,24 @@ class MonitorController extends ChangeNotifier {
 
   void _resetBoxBuckets() {
     _secondBuckets.clear();
-    _currentSecondSamples.clear();
-    _currentSecondKey = null;
+    _currentBinSamples.clear();
+    _currentBinKey = null;
   }
 
   void _finalizeSecondBucket({bool includePartial = false}) {
-    if (_currentSecondKey == null) {
-      _currentSecondSamples.clear();
+    if (_currentBinKey == null) {
+      _currentBinSamples.clear();
       return;
     }
-    if (_currentSecondSamples.isEmpty && !includePartial) {
+    if (_currentBinSamples.isEmpty && !includePartial) {
       return;
     }
-    if (_currentSecondSamples.isEmpty) {
-      _currentSecondKey = null;
+    if (_currentBinSamples.isEmpty) {
+      _currentBinKey = null;
       return;
     }
-    final samples = List<double>.from(_currentSecondSamples)..sort();
-    final start = DateTime.fromMillisecondsSinceEpoch(
-      _currentSecondKey! * 1000,
-    );
+    final samples = List<double>.from(_currentBinSamples)..sort();
+    final start = DateTime.fromMillisecondsSinceEpoch(_currentBinKey!);
     final stats = SecondBoxStats(
       start: start,
       minDb: samples.first,
@@ -590,8 +617,8 @@ class MonitorController extends ChangeNotifier {
     );
     _secondBuckets.add(stats);
     _trimBoxBuckets();
-    _currentSecondSamples.clear();
-    _currentSecondKey = null;
+    _currentBinSamples.clear();
+    _currentBinKey = null;
   }
 
   void _trimBoxBuckets() {
@@ -654,6 +681,20 @@ class MonitorController extends ChangeNotifier {
     final crossingSeconds =
         prefs.getDouble(_thresholdCrossingKey) ?? defaultCrossingSeconds;
     _thresholdCrossingSeconds = crossingSeconds.clamp(0.1, 1.0);
+
+    final binSeconds = prefs.getDouble(_boxBinSecondsKey);
+    if (binSeconds != null && _isAllowedBinDuration(binSeconds)) {
+      _boxBinSeconds = binSeconds;
+    }
+
+    final chartStyleName = prefs.getString(_chartVisualizationKey);
+    if (chartStyleName != null) {
+      final restoredStyle = ChartVisualization.values.firstWhere(
+        (value) => value.name == chartStyleName,
+        orElse: () => _chartVisualization,
+      );
+      _chartVisualization = restoredStyle;
+    }
 
     final hiddenBins = prefs.getStringList(_histogramHiddenKey);
     if (hiddenBins != null) {
@@ -718,6 +759,30 @@ class MonitorController extends ChangeNotifier {
   static const _intervalKey = 'recording_interval_minutes';
   static const _thresholdCrossingKey = 'threshold_crossing_seconds';
   static const _histogramHiddenKey = 'histogram_hidden_bins';
+  static const _boxBinSecondsKey = 'box_bin_seconds';
+  static const _chartVisualizationKey = 'chart_visualization';
+
+  static const List<double> _allowedBoxBinValues = [
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+  ];
+
+  bool _isAllowedBinDuration(double value) {
+    return _allowedBoxBinValues
+        .any((option) => (option - value).abs() < 0.0001);
+  }
+
+  int get _bucketDurationMilliseconds {
+    final clamped = _boxBinSeconds.clamp(
+      _allowedBoxBinValues.first,
+      _allowedBoxBinValues.last,
+    );
+    return (clamped * 1000).round();
+  }
 }
 
 class _PaletteColors {

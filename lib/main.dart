@@ -268,9 +268,31 @@ class _LevelChart extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Interval trends',
-              style: Theme.of(context).textTheme.titleSmall,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Interval trends',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                SegmentedButton<ChartVisualization>(
+                  segments: const [
+                    ButtonSegment(
+                      value: ChartVisualization.boxPlot,
+                      label: Text('Box'),
+                    ),
+                    ButtonSegment(
+                      value: ChartVisualization.linePlot,
+                      label: Text('Line'),
+                    ),
+                  ],
+                  showSelectedIcon: false,
+                  selected: {controller.chartVisualization},
+                  onSelectionChanged: (value) =>
+                      controller.setChartVisualization(value.first),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             if (buckets.isEmpty)
@@ -283,18 +305,26 @@ class _LevelChart extends StatelessWidget {
             else
               SizedBox(
                 height: 220,
-                child: _BoxPlotChart(
-                  buckets: buckets,
-                  minDb: minY,
-                  maxDb: maxY,
-                  intervalSeconds: intervalSeconds <= 0 ? 1 : intervalSeconds,
-                  caution: controller.cautionThreshold,
-                  danger: controller.dangerThreshold,
-                ),
+                child: controller.chartVisualization == ChartVisualization.boxPlot
+                    ? _BoxPlotChart(
+                        buckets: buckets,
+                        minDb: minY,
+                        maxDb: maxY,
+                        intervalSeconds: intervalSeconds <= 0 ? 1 : intervalSeconds,
+                        caution: controller.cautionThreshold,
+                        danger: controller.dangerThreshold,
+                      )
+                    : _QuartileLineChart(
+                        buckets: buckets,
+                        minDb: minY,
+                        maxDb: maxY,
+                        intervalSeconds: intervalSeconds <= 0 ? 1 : intervalSeconds,
+                      ),
               ),
-            if (buckets.isNotEmpty) ...[
+            if (controller.chartVisualization == ChartVisualization.linePlot &&
+                buckets.isNotEmpty) ...[
               const SizedBox(height: 12),
-            const SizedBox(height: 4),
+              const _LineLegend(),
             ],
           ],
         ),
@@ -1589,6 +1619,68 @@ class _ThresholdSlider extends StatelessWidget {
   }
 }
 
+class _BinDurationSelector extends StatelessWidget {
+  const _BinDurationSelector({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final double value;
+  final Future<void> Function(double) onChanged;
+
+  static const List<double> _options = [
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Trends bin duration',
+              style: textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _options.map((option) {
+                final isSelected = (option - value).abs() < 0.0001;
+                final label =
+                    option < 1 ? '${option.toStringAsFixed(2)} s' : '${option.toStringAsFixed(1)} s';
+                return ChoiceChip(
+                  label: Text(label),
+                  selected: isSelected,
+                  onSelected: (selected) {
+                    if (selected && !isSelected) {
+                      onChanged(option);
+                    }
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Controls how many seconds of data are summarized in each box or line segment within the Interval trends chart.',
+              style: textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _GuidanceTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -1892,6 +1984,11 @@ class OptionsScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 12),
+              _BinDurationSelector(
+                value: controller.boxBinSeconds,
+                onChanged: controller.setBoxBinSeconds,
               ),
               const SizedBox(height: 12),
               _AlertLevelsCard(controller: controller),
