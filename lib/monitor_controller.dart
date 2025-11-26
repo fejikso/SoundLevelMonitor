@@ -49,6 +49,18 @@ class IntervalStats {
   final double maxDb;
 }
 
+class HistogramBucket {
+  const HistogramBucket({
+    required this.lowerBound,
+    required this.upperBound,
+    required this.seconds,
+  });
+
+  final double lowerBound;
+  final double upperBound;
+  final double seconds;
+}
+
 class SamplePoint {
   SamplePoint({
     required this.timestamp,
@@ -66,6 +78,11 @@ class SamplePoint {
 class MonitorController extends ChangeNotifier {
   static const double smoothingAlpha = 0.1;
   static const double defaultCrossingSeconds = 0.2;
+  static const double histogramMinDb = 40;
+  static const double histogramMaxDb = 100;
+  static const double histogramStepDb = 5;
+  static final int _histogramBinCount =
+      ((histogramMaxDb - histogramMinDb) / histogramStepDb).round();
 
   MonitorController() {
     _refreshThresholds();
@@ -101,6 +118,10 @@ class MonitorController extends ChangeNotifier {
   final List<IntervalSnapshot> _history = [];
   final List<SamplePoint> _sampleBuffer = [];
   double _thresholdCrossingSeconds = defaultCrossingSeconds;
+  final List<double> _histogramSeconds =
+      List<double>.filled(_histogramBinCount, 0);
+  DateTime? _lastSampleTimestamp;
+  double? _lastSampleDb;
 
   bool get isRecording => _isRecording;
   double? get currentDb => _currentDb;
@@ -118,6 +139,27 @@ class MonitorController extends ChangeNotifier {
   bool get keepScreenAwake => _keepScreenAwake;
   PaletteMode get paletteMode => _paletteMode;
   double get thresholdCrossingSeconds => _thresholdCrossingSeconds;
+  double get intervalProgress {
+    if (!_isRecording || _windowStart == null || _interval.inMilliseconds == 0) {
+      return 0;
+    }
+    final elapsed =
+        DateTime.now().difference(_windowStart!).inMilliseconds.toDouble();
+    final total = _interval.inMilliseconds.toDouble();
+    return (elapsed / total).clamp(0, 1);
+  }
+  List<HistogramBucket> get histogramBuckets => List.generate(
+        _histogramSeconds.length,
+        (index) {
+          final lower = histogramMinDb + histogramStepDb * index;
+          final upper = lower + histogramStepDb;
+          return HistogramBucket(
+            lowerBound: lower,
+            upperBound: upper,
+            seconds: _histogramSeconds[index],
+          );
+        },
+      );
   IntervalStats? get currentIntervalStats => _windowCount == 0
       ? null
       : IntervalStats(
@@ -150,6 +192,7 @@ class MonitorController extends ChangeNotifier {
         onError: _handleError,
         cancelOnError: true,
       );
+      _resetHistogram(silent: true);
       _isRecording = true;
       _windowStart = DateTime.now();
       _startIntervalTimer();
@@ -172,6 +215,8 @@ class MonitorController extends ChangeNotifier {
     _noiseSubscription = null;
     _finalizeWindow(includePartial: true);
     _windowStart = null;
+    _lastSampleTimestamp = null;
+    _lastSampleDb = null;
     notifyListeners();
   }
 
@@ -191,6 +236,7 @@ class MonitorController extends ChangeNotifier {
 
   void clearHistory() {
     _history.clear();
+    _resetHistogram(silent: true);
     notifyListeners();
   }
 
@@ -250,6 +296,16 @@ class MonitorController extends ChangeNotifier {
     if (!value.isFinite) {
       value = 0;
     }
+    final now = DateTime.now();
+    if (_lastSampleTimestamp != null && _lastSampleDb != null) {
+      final seconds =
+          now.difference(_lastSampleTimestamp!).inMilliseconds / 1000.0;
+      if (seconds > 0) {
+        _accumulateHistogram(_lastSampleDb!, seconds);
+      }
+    }
+    _lastSampleTimestamp = now;
+    _lastSampleDb = value;
     _currentDb =
         _currentDb == null ? value : value * smoothingAlpha + _currentDb! * (1 - smoothingAlpha);
     _windowSum += value;
@@ -411,6 +467,25 @@ class MonitorController extends ChangeNotifier {
     while (_sampleBuffer.isNotEmpty &&
         _sampleBuffer.first.timestamp.isBefore(cutoff)) {
       _sampleBuffer.removeAt(0);
+    }
+  }
+
+  void _accumulateHistogram(double reading, double seconds) {
+    final clamped = reading.clamp(histogramMinDb, histogramMaxDb);
+    final index = ((clamped - histogramMinDb) / histogramStepDb)
+        .floor()
+        .clamp(0, _histogramSeconds.length - 1);
+    _histogramSeconds[index] += seconds;
+  }
+
+  void _resetHistogram({bool silent = false}) {
+    for (var i = 0; i < _histogramSeconds.length; i++) {
+      _histogramSeconds[i] = 0;
+    }
+    _lastSampleTimestamp = null;
+    _lastSampleDb = null;
+    if (!silent) {
+      notifyListeners();
     }
   }
 

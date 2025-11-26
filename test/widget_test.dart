@@ -5,16 +5,15 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
-import 'package:flutter_test/flutter_test.dart';
-
 import 'package:decibel_monitor/main.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets('App boots with key controls visible', (WidgetTester tester) async {
     await tester.pumpWidget(const SoundMonitorApp());
 
     expect(find.text('Sound Level Monitor'), findsOneWidget);
-    expect(find.text('Record'), findsOneWidget);
-    expect(find.text('Pause'), findsOneWidget);
+    expect(find.byTooltip('Record'), findsOneWidget);
+    expect(find.byTooltip('Pause'), findsOneWidget);
   });
 }

@@ -178,7 +178,7 @@ class _MonitorContent extends StatelessWidget {
   }
 }
 
-enum InsightMode { chart, stats }
+enum InsightMode { chart, hist, stats }
 
 class _ControlsGrid extends StatefulWidget {
   const _ControlsGrid({required this.stats});
@@ -201,7 +201,6 @@ class _ControlsGridState extends State<_ControlsGrid> {
           isRecording: controller.isRecording,
           onStart: controller.startMonitoring,
           onPause: controller.pauseMonitoring,
-          onLevels: () => _showLevelsSheet(context),
           onOptions: () => _openOptions(context),
           onAbout: () => _showAboutDialog(context),
           mode: _mode,
@@ -210,23 +209,33 @@ class _ControlsGridState extends State<_ControlsGrid> {
         const SizedBox(height: 12),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
-          child: _mode == InsightMode.chart
-              ? const _LevelChart(key: ValueKey('chart'))
-              : widget.stats == null
-                  ? const Card(
-                      key: ValueKey('stats-empty'),
-                      child: Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text(
-                          'No interval stats yet. Start recording to see values.',
-                        ),
+          child: () {
+            switch (_mode) {
+              case InsightMode.chart:
+                return const _LevelChart(key: ValueKey('chart'));
+              case InsightMode.hist:
+                return const _HistogramCard(key: ValueKey('hist'));
+              case InsightMode.stats:
+                if (widget.stats == null) {
+                  return const Card(
+                    key: ValueKey('stats-empty'),
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'No interval stats yet. Start recording to see values.',
                       ),
-                    )
-                  : _StatsCard(
-                      key: const ValueKey('stats'),
-                      title: 'Current interval so far',
-                      stats: widget.stats!,
                     ),
+                  );
+                }
+                return _StatsCard(
+                  key: const ValueKey('stats'),
+                  title: 'Current interval so far',
+                  stats: widget.stats!,
+                  progress: controller.intervalProgress,
+                  isRecording: controller.isRecording,
+                );
+            }
+          }(),
         ),
       ],
     );
@@ -323,10 +332,7 @@ class _LevelChart extends StatelessWidget {
       minY: minY,
       maxY: maxY,
       lineTouchData: LineTouchData(
-        touchTooltipData: LineTouchTooltipData(
-          getTooltipColor: (_) =>
-              Theme.of(context).colorScheme.surfaceContainerHighest,
-        ),
+        enabled: false,
       ),
       gridData: FlGridData(
         show: true,
@@ -394,7 +400,7 @@ class _LevelChart extends StatelessWidget {
         ],
       ),
       lineBarsData: [
-        _buildLine(meanSpots, Colors.blueAccent),
+        _buildDotSeries(meanSpots, Colors.blueAccent),
       ],
     );
   }
@@ -413,23 +419,259 @@ class _LevelChart extends StatelessWidget {
     }).toList();
   }
 
-  LineChartBarData _buildLine(List<FlSpot> spots, Color color) {
+  LineChartBarData _buildDotSeries(List<FlSpot> spots, Color dotColor) {
     return LineChartBarData(
       spots: spots,
       isCurved: false,
-      color: color,
-      barWidth: 2,
-      dotData: const FlDotData(show: false),
+      color: Colors.transparent,
+      barWidth: 0,
+      dotData: FlDotData(
+        show: true,
+        getDotPainter: (spot, percent, barData, index) => FlDotCirclePainter(
+          radius: 3,
+          color: dotColor,
+          strokeColor: dotColor,
+        ),
+      ),
     );
   }
 }
 
+class _HistogramCard extends StatefulWidget {
+  const _HistogramCard({super.key});
+
+  @override
+  State<_HistogramCard> createState() => _HistogramCardState();
+}
+
+class _HistogramCardState extends State<_HistogramCard> {
+  final Set<int> _hiddenBins = <int>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<MonitorController>();
+    final buckets = controller.histogramBuckets;
+    final visibleEntries = <MapEntry<int, HistogramBucket>>[];
+    for (var i = 0; i < buckets.length; i++) {
+      if (_hiddenBins.contains(i)) continue;
+      visibleEntries.add(MapEntry(i, buckets[i]));
+    }
+    final hasHidden = _hiddenBins.isNotEmpty;
+    final totalSeconds = buckets.fold<double>(
+      0,
+      (sum, bucket) => sum + bucket.seconds,
+    );
+    final maxSeconds = visibleEntries.isEmpty
+        ? 0.0
+        : visibleEntries
+            .map((entry) => entry.value.seconds)
+            .reduce(math.max)
+            .toDouble();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Exposure histogram',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                if (hasHidden)
+                  TextButton(
+                    onPressed: () => setState(_hiddenBins.clear),
+                    child: const Text('Reset bins'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (totalSeconds == 0)
+              SizedBox(
+                height: 180,
+                child: Center(
+                  child: Text(
+                    'No histogram data yet. Start recording to see exposure time.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else if (visibleEntries.isEmpty)
+              SizedBox(
+                height: 180,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('All bins hidden.'),
+                      TextButton(
+                        onPressed: () => setState(_hiddenBins.clear),
+                        child: const Text('Show all bins'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              SizedBox(
+                height: 220,
+                child: BarChart(
+                  _buildChartData(
+                    context,
+                    visibleEntries,
+                    maxSeconds == 0 ? 1 : maxSeconds,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 16),
+            if (visibleEntries.isNotEmpty)
+              Column(
+                children: [
+                  for (final entry in visibleEntries)
+                    _HistogramRow(
+                      bucket: entry.value,
+                      onHide: () => setState(() {
+                        _hiddenBins.add(entry.key);
+                      }),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  BarChartData _buildChartData(
+    BuildContext context,
+    List<MapEntry<int, HistogramBucket>> entries,
+    double maxValue,
+  ) {
+    final theme = Theme.of(context);
+    final groups = <BarChartGroupData>[];
+    for (var i = 0; i < entries.length; i++) {
+      final bucket = entries[i].value;
+      groups.add(
+        BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: bucket.seconds,
+              width: 14,
+              borderRadius: BorderRadius.circular(6),
+              color: theme.colorScheme.primary,
+              rodStackItems: [],
+            ),
+          ],
+        ),
+      );
+    }
+    return BarChartData(
+      minY: 0,
+      maxY: maxValue * 1.1,
+      gridData: FlGridData(show: true, horizontalInterval: maxValue / 4),
+      borderData: FlBorderData(
+        show: true,
+        border: Border.all(color: theme.dividerColor),
+      ),
+      titlesData: FlTitlesData(
+        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        bottomTitles: AxisTitles(
+          sideTitles: SideTitles(
+            showTitles: true,
+            reservedSize: 36,
+            getTitlesWidget: (value, meta) {
+              final index = value.toInt();
+              if (index < 0 || index >= entries.length) {
+                return const SizedBox.shrink();
+              }
+              final bucket = entries[index].value;
+              return Transform.rotate(
+                angle: -math.pi / 4,
+                child: Text(
+                  '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              );
+            },
+          ),
+        ),
+        leftTitles: AxisTitles(
+          sideTitles: SideTitles(
+            showTitles: true,
+            reservedSize: 48,
+            getTitlesWidget: (value, meta) =>
+                Text(_formatExposure(value.toDouble())),
+          ),
+        ),
+      ),
+      barGroups: groups,
+    );
+  }
+}
+
+class _HistogramRow extends StatelessWidget {
+  const _HistogramRow({required this.bucket, required this.onHide});
+
+  final HistogramBucket bucket;
+  final VoidCallback onHide;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${bucket.lowerBound.toInt()}-${bucket.upperBound.toInt()} dB',
+            ),
+          ),
+          Text(
+            _formatExposure(bucket.seconds),
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+          IconButton(
+            tooltip: 'Hide bin',
+            onPressed: onHide,
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatExposure(double seconds) {
+  final doubleSeconds = seconds;
+  if (doubleSeconds < 60) {
+    final value = doubleSeconds < 10 ? doubleSeconds.toStringAsFixed(1) : doubleSeconds.toStringAsFixed(0);
+    return '$value s';
+  }
+  final minutes = doubleSeconds / 60;
+  if (minutes < 60) {
+    final value = minutes < 10 ? minutes.toStringAsFixed(1) : minutes.toStringAsFixed(0);
+    return '$value min';
+  }
+  final hours = minutes / 60;
+  if (hours < 24) {
+    final value = hours < 10 ? hours.toStringAsFixed(1) : hours.toStringAsFixed(0);
+    return '$value h';
+  }
+  final days = hours / 24;
+  final value = days < 10 ? days.toStringAsFixed(1) : days.toStringAsFixed(0);
+  return '$value d';
+}
 class _ControlsWrap extends StatelessWidget {
   const _ControlsWrap({
     required this.isRecording,
     required this.onStart,
     required this.onPause,
-    required this.onLevels,
     required this.onOptions,
     required this.onAbout,
     required this.mode,
@@ -439,7 +681,6 @@ class _ControlsWrap extends StatelessWidget {
   final bool isRecording;
   final Future<void> Function()? onStart;
   final Future<void> Function()? onPause;
-  final VoidCallback onLevels;
   final VoidCallback onOptions;
   final VoidCallback onAbout;
   final InsightMode mode;
@@ -449,79 +690,132 @@ class _ControlsWrap extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final availableWidth = (constraints.maxWidth.isFinite
-                ? constraints.maxWidth
-                : MediaQuery.sizeOf(context).width) -
-            4; // account for padding jitter
-        const spacing = 12.0;
-        final columns = availableWidth > 640 ? 3 : 2;
-        final rawWidth =
-            (availableWidth - spacing * (columns - 1)) / columns;
-        final itemWidth = rawWidth.clamp(150.0, 220.0);
-
-        final buttonStyle = ButtonStyle(
+        final standardStyle = ButtonStyle(
           padding: WidgetStateProperty.all(
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           ),
-          minimumSize: WidgetStateProperty.all(Size(itemWidth, 40)),
+          minimumSize: WidgetStateProperty.all(const Size(110, 40)),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         );
 
-        final buttons = [
-          ElevatedButton.icon(
-            style: buttonStyle,
-            onPressed: isRecording ? null : onStart,
-            icon: const Icon(Icons.fiber_manual_record),
-            label: const Text('Record'),
-          ),
-          FilledButton.icon(
-            style: buttonStyle,
-            onPressed: isRecording ? onPause : null,
-            icon: const Icon(Icons.pause_circle),
-            label: const Text('Pause'),
-          ),
-          OutlinedButton.icon(
-            style: buttonStyle,
-            onPressed: onLevels,
-            icon: const Icon(Icons.tune),
-            label: const Text('Levels'),
-          ),
-          OutlinedButton.icon(
-            style: buttonStyle,
-            onPressed: onOptions,
-            icon: const Icon(Icons.settings_suggest),
-            label: const Text('Options'),
-          ),
-          OutlinedButton.icon(
-            style: buttonStyle,
-            onPressed: onAbout,
-            icon: const Icon(Icons.info_outline),
-            label: const Text('About'),
-          ),
-          SegmentedButton<InsightMode>(
-            segments: const [
-              ButtonSegment(value: InsightMode.chart, label: Text('Chart')),
-              ButtonSegment(value: InsightMode.stats, label: Text('Stats')),
-            ],
-            showSelectedIcon: false,
-            selected: {mode},
-            onSelectionChanged: (value) => onModeChanged(value.first),
-          ),
-        ];
+        Widget compactOutlined(
+          String label,
+          IconData icon,
+          VoidCallback onPressed,
+        ) {
+          return SizedBox(
+            width: 130,
+            child: OutlinedButton.icon(
+              style: standardStyle,
+              onPressed: onPressed,
+              icon: Icon(icon, size: 18),
+              label: Text(label),
+            ),
+          );
+        }
 
-        return Wrap(
-          spacing: spacing,
-          runSpacing: 8,
-          children: buttons
-              .map(
-                (button) => SizedBox(
-                  width: itemWidth,
-                  child: button,
+        final buttonsRow = Row(
+          mainAxisAlignment: MainAxisAlignment.start,
+          children: [
+            _RecordPauseButtons(
+              isRecording: isRecording,
+              onStart: onStart,
+              onPause: onPause,
+            ),
+            const SizedBox(width: 12),
+            compactOutlined('Options', Icons.settings_suggest, onOptions),
+            const SizedBox(width: 12),
+            compactOutlined('About', Icons.info_outline, onAbout),
+          ],
+        );
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minWidth: constraints.maxWidth,
                 ),
-              )
-              .toList(),
+                child: buttonsRow,
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<InsightMode>(
+                segments: const [
+                  ButtonSegment(value: InsightMode.chart, label: Text('Chart')),
+                  ButtonSegment(
+                    value: InsightMode.hist,
+                    label: Text('Histogram'),
+                  ),
+                  ButtonSegment(value: InsightMode.stats, label: Text('Stats')),
+                ],
+                showSelectedIcon: false,
+                selected: {mode},
+                onSelectionChanged: (value) => onModeChanged(value.first),
+              ),
+            ),
+          ],
         );
       },
+    );
+  }
+}
+
+class _RecordPauseButtons extends StatelessWidget {
+  const _RecordPauseButtons({
+    required this.isRecording,
+    required this.onStart,
+    required this.onPause,
+  });
+
+  final bool isRecording;
+  final Future<void> Function()? onStart;
+  final Future<void> Function()? onPause;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = Theme.of(context).colorScheme.outline;
+    final iconStyle = IconButton.styleFrom(
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      minimumSize: const Size(40, 40),
+    );
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Record',
+            style: iconStyle,
+            onPressed: isRecording ? null : onStart,
+            icon: const Icon(
+              Icons.fiber_manual_record,
+              color: Colors.redAccent,
+            ),
+          ),
+          SizedBox(
+            height: 28,
+            child: VerticalDivider(
+              color: borderColor,
+              thickness: 1,
+              width: 1,
+            ),
+          ),
+          IconButton(
+            tooltip: 'Pause',
+            style: iconStyle,
+            onPressed: isRecording ? onPause : null,
+            icon: const Icon(Icons.pause),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -590,10 +884,25 @@ class _IntervalsCard extends StatelessWidget {
                     ),
             ),
             const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: () => _exportHistory(context),
-              icon: const Icon(Icons.ios_share),
-              label: const Text('Export history'),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => _exportHistory(context),
+                    icon: const Icon(Icons.ios_share),
+                    label: const Text('Export history'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed:
+                        entries.isEmpty ? null : () => controller.clearHistory(),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Clear'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -630,6 +939,59 @@ class _IntervalSlider extends StatelessWidget {
               divisions: 19,
               label: '${minutes.toStringAsFixed(2)} min',
               onChanged: onChanged,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AlertLevelsCard extends StatelessWidget {
+  const _AlertLevelsCard({required this.controller});
+
+  final MonitorController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final caution = controller.cautionThreshold;
+    final danger = controller.dangerThreshold;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Alert levels',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Reference table',
+                  onPressed: () => _showLevelsInfo(context),
+                  icon: const Icon(Icons.info_outline),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _ThresholdSlider(
+              label: 'Yellow warning',
+              value: caution,
+              min: 40,
+              max: 90,
+              onChanged: (value) => controller.updateThresholds(caution: value),
+            ),
+            const SizedBox(height: 12),
+            _ThresholdSlider(
+              label: 'Red danger',
+              value: danger,
+              min: (caution + 1).clamp(45, 110),
+              max: 110,
+              onChanged: (value) => controller.updateThresholds(danger: value),
             ),
           ],
         ),
@@ -718,88 +1080,21 @@ Future<void> _showAboutDialog(BuildContext context) {
   );
 }
 
-void _showLevelsSheet(BuildContext context) {
-  final controller = context.read<MonitorController>();
-  showModalBottomSheet<void>(
+Future<void> _showLevelsInfo(BuildContext context) {
+  return showDialog<void>(
     context: context,
-    isScrollControlled: true,
     builder: (context) {
-      double caution = controller.cautionThreshold;
-      double danger = controller.dangerThreshold;
-      return StatefulBuilder(
-        builder: (context, setState) {
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 24,
-              bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Configure alert levels',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Close',
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ThresholdSlider(
-                    label: 'Yellow warning',
-                    value: caution,
-                    min: 40,
-                    max: 90,
-                    onChanged: (value) {
-                      setState(() {
-                        caution = value;
-                        if (danger <= caution) {
-                          danger = (caution + 1).clamp(45, 110);
-                        }
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _ThresholdSlider(
-                    label: 'Red danger',
-                    value: danger,
-                    min: caution + 1,
-                    max: 110,
-                    onChanged: (value) {
-                      setState(() {
-                        danger = value;
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  _GuidanceTable(),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: () {
-                      controller.updateThresholds(
-                        caution: caution,
-                        danger: danger,
-                      );
-                      Navigator.of(context).pop();
-                    },
-                    child: const Text('Save levels'),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+      return AlertDialog(
+        title: const Text('Exposure guidance'),
+        content: SingleChildScrollView(
+          child: _GuidanceTable(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
       );
     },
   );
@@ -850,7 +1145,7 @@ class _GuidanceTable extends StatelessWidget {
     const rows = [
       [
         'Whisper (20–30 dB)',
-        'Faint / quiet • Comfortable for long exposure.',
+        'Faint / quiet',
       ],
       [
         'Quiet library (≈40 dB)',
@@ -927,13 +1222,23 @@ class _GuidanceTable extends StatelessWidget {
 }
 
 class _StatsCard extends StatelessWidget {
-  const _StatsCard({super.key, required this.title, required this.stats});
+  const _StatsCard({
+    super.key,
+    required this.title,
+    required this.stats,
+    required this.progress,
+    required this.isRecording,
+  });
 
   final String title;
   final IntervalStats stats;
+  final double progress;
+  final bool isRecording;
 
   @override
   Widget build(BuildContext context) {
+    final effectiveProgress =
+        isRecording ? progress.clamp(0, 1).toDouble() : 0.0;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -943,6 +1248,14 @@ class _StatsCard extends StatelessWidget {
             Text(
               title,
               style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: effectiveProgress,
+                minHeight: 4,
+              ),
             ),
             const SizedBox(height: 12),
             _StatRow(stats: stats),
@@ -1108,6 +1421,8 @@ class OptionsScreen extends StatelessWidget {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              _AlertLevelsCard(controller: controller),
               const SizedBox(height: 12),
               SwitchListTile(
                 title: const Text('Keep screen awake'),
