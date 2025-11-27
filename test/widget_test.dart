@@ -12,7 +12,7 @@ void main() {
   testWidgets('App boots with key controls visible', (WidgetTester tester) async {
     await tester.pumpWidget(const SoundMonitorApp());
 
-    expect(find.text('Sound Level Monitor'), findsOneWidget);
+    expect(find.text('Decibel Monitor'), findsOneWidget);
     expect(find.byTooltip('Record'), findsOneWidget);
     expect(find.byTooltip('Pause'), findsOneWidget);
   });

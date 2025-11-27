@@ -334,6 +334,285 @@ class _LevelChart extends StatelessWidget {
 
 }
 
+class _QuartileLineChart extends StatelessWidget {
+  const _QuartileLineChart({
+    required this.buckets,
+    required this.minDb,
+    required this.maxDb,
+    required this.intervalSeconds,
+  });
+
+  final List<SecondBoxStats> buckets;
+  final double minDb;
+  final double maxDb;
+  final double intervalSeconds;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveInterval = intervalSeconds <= 0 ? 1.0 : intervalSeconds;
+    if (buckets.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final latestStart = buckets.last.start;
+    final rangeStart =
+        latestStart.subtract(Duration(milliseconds: (effectiveInterval * 1000).round()));
+    List<FlSpot> buildSeries(double Function(SecondBoxStats stats) selector) {
+      return buckets.map((bucket) {
+        final relMillis =
+            bucket.start.difference(rangeStart).inMilliseconds.toDouble();
+        final seconds =
+            ((relMillis / 1000).clamp(0, effectiveInterval)).toDouble();
+        final value = selector(bucket).clamp(minDb, maxDb).toDouble();
+        return FlSpot(seconds, value);
+      }).toList();
+    }
+
+    final palette = _LinePalette(Theme.of(context).colorScheme);
+    final series = [
+      _LineSeries(
+        label: 'Max',
+        color: palette.maxColor,
+        spots: buildSeries((stats) => stats.maxDb),
+      ),
+      _LineSeries(
+        label: 'Q3',
+        color: palette.q3Color,
+        spots: buildSeries((stats) => stats.q3),
+      ),
+      _LineSeries(
+        label: 'Median',
+        color: palette.medianColor,
+        spots: buildSeries((stats) => stats.median),
+      ),
+      _LineSeries(
+        label: 'Q1',
+        color: palette.q1Color,
+        spots: buildSeries((stats) => stats.q1),
+      ),
+      _LineSeries(
+        label: 'Min',
+        color: palette.minColor,
+        spots: buildSeries((stats) => stats.minDb),
+      ),
+    ];
+
+    return LineChart(
+      LineChartData(
+        minX: 0,
+        maxX: effectiveInterval,
+        minY: minDb,
+        maxY: maxDb,
+        gridData: FlGridData(
+          show: true,
+          horizontalInterval: 10,
+          verticalInterval: effectiveInterval / 5,
+          getDrawingHorizontalLine: (value) => FlLine(
+            color: Theme.of(context)
+                .colorScheme
+                .outlineVariant
+                .withValues(alpha: 0.4),
+            strokeWidth: 0.6,
+          ),
+          getDrawingVerticalLine: (value) => FlLine(
+            color: Theme.of(context)
+                .colorScheme
+                .outlineVariant
+                .withValues(alpha: 0.3),
+            strokeWidth: 0.5,
+          ),
+        ),
+        titlesData: FlTitlesData(
+          topTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
+          rightTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 32,
+              interval: effectiveInterval / 4,
+              getTitlesWidget: (value, meta) =>
+                  _LineAxisLabel(value: value, interval: effectiveInterval),
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              interval: 10,
+              getTitlesWidget: (value, meta) => Text(
+                value.toStringAsFixed(0),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            axisNameWidget: const Padding(
+              padding: EdgeInsets.only(bottom: 4),
+              child: Text('dB'),
+            ),
+            axisNameSize: 24,
+          ),
+        ),
+        borderData: FlBorderData(
+          show: true,
+          border: Border.all(
+            color: Theme.of(context).dividerColor,
+            width: 1,
+          ),
+        ),
+        lineBarsData: series
+            .map(
+              (line) => LineChartBarData(
+                spots: line.spots,
+                color: line.color,
+                barWidth: 2,
+                isCurved: true,
+                isStrokeCapRound: true,
+                dotData: const FlDotData(show: false),
+              ),
+            )
+            .toList(),
+        lineTouchData: LineTouchData(
+          enabled: true,
+          touchTooltipData: LineTouchTooltipData(
+            getTooltipColor: (_) =>
+                Theme.of(context).colorScheme.surfaceContainer,
+            getTooltipItems: (items) => items.map((item) {
+              final secondsAgo =
+                  (effectiveInterval - item.x).clamp(0, effectiveInterval).toDouble();
+              final label = secondsAgo <= 0
+                  ? 'Now'
+                  : '-${_formatDurationLabel(secondsAgo)}';
+              final seriesLabel = item.barIndex < series.length
+                  ? series[item.barIndex].label
+                  : '';
+              final text =
+                  '$seriesLabel: ${item.y.toStringAsFixed(1)} dB\n$label';
+              final style =
+                  Theme.of(context).textTheme.labelMedium ??
+                      const TextStyle(fontSize: 12);
+              return LineTooltipItem(text, style);
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LineLegend extends StatelessWidget {
+  const _LineLegend();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = _LinePalette(Theme.of(context).colorScheme);
+    final entries = <_LegendEntry>[
+      _LegendEntry('Max', palette.maxColor),
+      _LegendEntry('Q3', palette.q3Color),
+      _LegendEntry('Median', palette.medianColor),
+      _LegendEntry('Q1', palette.q1Color),
+      _LegendEntry('Min', palette.minColor),
+    ];
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      children: entries
+          .map(
+            (entry) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 16,
+                  height: 4,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: BoxDecoration(
+                    color: entry.color,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                Text(
+                  entry.label,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _LinePalette {
+  _LinePalette(ColorScheme scheme)
+      : maxColor = scheme.error,
+        q3Color = scheme.tertiary,
+        medianColor = scheme.primary,
+        q1Color = scheme.secondary,
+        minColor = scheme.outline;
+
+  final Color maxColor;
+  final Color q3Color;
+  final Color medianColor;
+  final Color q1Color;
+  final Color minColor;
+}
+
+class _LineSeries {
+  const _LineSeries({
+    required this.label,
+    required this.color,
+    required this.spots,
+  });
+
+  final String label;
+  final Color color;
+  final List<FlSpot> spots;
+}
+
+class _LegendEntry {
+  const _LegendEntry(this.label, this.color);
+
+  final String label;
+  final Color color;
+}
+
+class _LineAxisLabel extends StatelessWidget {
+  const _LineAxisLabel({
+    required this.value,
+    required this.interval,
+  });
+
+  final double value;
+  final double interval;
+
+  @override
+  Widget build(BuildContext context) {
+    final secondsAgo = (interval - value).clamp(0, interval).toDouble();
+    final label =
+        secondsAgo <= 0 ? 'Now' : '-${_formatDurationLabel(secondsAgo)}';
+    return Text(
+      label,
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+}
+
+String _formatDurationLabel(double seconds) {
+  final totalSeconds = seconds.round();
+  if (totalSeconds < 60) {
+    return '${totalSeconds}s';
+  }
+  final minutes = totalSeconds ~/ 60;
+  final remSeconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return '${minutes}m ${remSeconds.toString().padLeft(2, '0')}s';
+  }
+  final hours = minutes ~/ 60;
+  final remMinutes = minutes % 60;
+  return '${hours}h ${remMinutes.toString().padLeft(2, '0')}m';
+}
+
 class _HistogramCard extends StatelessWidget {
   const _HistogramCard({super.key});
 
